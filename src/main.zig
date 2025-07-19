@@ -1,13 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("zig_reloc_lib");
-const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o" };
+const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o", @"--checked" };
 pub fn main() !void {
-    var timer: std.time.Timer = try .start();
-    defer std.debug.print("time: {d}.{d:0>9}s\n", .{
-        timer.read() / 1_000_000_000,
-        timer.read() % 1_000_000_000,
-    });
     var stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
     defer stdout.flush() catch {};
     var stderr = std.io.bufferedWriter(std.io.getStdErr().writer());
@@ -28,6 +23,7 @@ pub fn main() !void {
     _ = args.skip();
     var in_file: ?[]const u8 = null;
     var out_file: ?[]const u8 = null;
+    var run_check = false;
     var relocs: std.ArrayListUnmanaged(root.NamespaceRelocation) = .empty;
     defer relocs.deinit(allocator);
     while (args.next()) |arg| {
@@ -37,11 +33,15 @@ pub fn main() !void {
                     \\zig-reloc version 0.0.0: move declarations in a zig file and attempt to 
                     \\fix all references to said declerations.
                     \\
-                    \\Usage: zig-reloc [FILE] [{-n|--namespace} PREFIX NAME] ...
+                    \\Usage: zig-reloc [FILE] [{{-n|--namespace} PREFIX NAME] ... [{-o|--output} FILE [--checked]]
                     \\If FILE is not provided, stdin will be used instead.
                     \\
                     \\ -n, --namespace        move all declarations with prefix PREFIX into a new  
                     \\                        namespace with name NAME
+                    \\ -o, --output           print output to FILE instead of stdout
+                    \\
+                    \\ --checked              run `zig ast-check` on output after finishing. 
+                    \\                        requires -o flag
                     \\By omeps
                     \\
                 );
@@ -64,12 +64,23 @@ pub fn main() !void {
                 };
             },
             .@"-o", .@"--output" => {
+                if (out_file != null) {
+                    stderr.writer().writeAll("too many output files: only 1 is allowed\n") catch {};
+                    return error.doubledFiles;
+                }
                 out_file = args.next() orelse {
                     stderr.writer().writeAll("too few args: -o requires an output file arg\n") catch {};
                     return error.tooFewArgs;
                 };
             },
+            .@"--checked" => {
+                run_check = true;
+            }
         } else {
+            if (in_file != null) {
+                stderr.writer().writeAll("too many output files: only 1 is allowed\n") catch {};
+                return error.doubledFiles;
+            }
             in_file = arg;
         }
     }
@@ -81,4 +92,9 @@ pub fn main() !void {
         std.fmt.format(stderr.writer().any(), "file create on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     } else std.io.getStdOut(), relocs.items);
+    if (run_check) return std.process.execv(allocator, &.{
+        "zig",
+        "ast-check",
+        out_file orelse return error.missingOutputFile,
+    });
 }
