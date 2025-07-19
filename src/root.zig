@@ -42,6 +42,7 @@ pub const Declaration = struct {
         composed_type: []Declaration,
         shortcut: []const []const u8,
         leaf,
+        func,
         pub fn sort_by_name(self: Value) void {
             if (self == .composed_type) {
                 const decls = self.composed_type;
@@ -148,7 +149,12 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
             _ = search(ast, ast.nodeData(node).node, decls, scope);
             return null;
         },
-        .@"catch" => search(ast, ast.nodeData(node).node_and_node.@"1", decls, scope) orelse search(ast, ast.nodeData(node).node_and_node.@"0", decls, scope),
+        .@"catch" => {
+            const lhs, const rhs = ast.nodeData(node).node_and_node;
+            const left = search(ast, lhs, decls, scope);
+            const right = search(ast, rhs, decls, scope);
+            return left orelse right;
+        },
         .identifier => scope.findDecl(unraw(ast.tokenSlice(ast.nodeMainToken(node)))) orelse return null,
         .field_access => access: {
             const lhs, const a = ast.nodeData(node).node_and_token;
@@ -266,7 +272,6 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         .bit_or,
         .bit_and,
         .bit_xor,
-        .bit_not,
         .@"orelse",
         .bool_or,
         .bool_and,
@@ -313,28 +318,25 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
             if (full.ast.type_expr.unwrap()) |ty| return search(ast, ty, decls, scope);
             return null;
         },
-        .@"switch",
-        .switch_comma,
-        => {
+        .@"switch", .switch_comma => {
             const full = ast.fullSwitch(node) orelse return null;
             _ = search(ast, full.ast.condition, decls, scope);
             for (full.ast.cases) |case|
                 _ = search(ast, case, decls, scope);
             return null;
         },
-        .unwrap_optional,
+        .@"try",
+        .@"comptime",
         .negation,
         .negation_wrap,
         .address_of,
         .deref,
-        .@"comptime",
         .bool_not,
+        .bit_not,
         => {
             return search(ast, ast.nodeData(node).node, decls, scope);
         },
-        .array_type,
-        .array_type_sentinel,
-        => {
+        .array_type, .array_type_sentinel => {
             const full = ast.fullArrayType(node) orelse return null;
             _ = search(ast, full.ast.elem_type, decls, scope);
             _ = search(ast, full.ast.elem_count, decls, scope);
@@ -342,17 +344,80 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
                 _ = search(ast, sentinel, decls, scope);
             return null;
         },
-        .builtin_call,
-        .builtin_call_two,
-        .builtin_call_comma,
-        .builtin_call_two_comma,
-        => {
+        .builtin_call, .builtin_call_two, .builtin_call_comma, .builtin_call_two_comma => {
             var buffer: [2]Ast.Node.Index = undefined;
             const params = ast.builtinCallParams(&buffer, node) orelse return null;
             for (params) |param| _ = search(ast, param, decls, scope);
             return null;
         },
         else => return null,
+        .slice, .slice_open, .slice_sentinel => {
+            const slice = ast.fullSlice(node) orelse return null;
+            _ = search(ast, slice.ast.sliced, decls, scope);
+            _ = search(ast, slice.ast.start, decls, scope);
+            if (slice.ast.end.unwrap()) |end| _ = search(ast, end, decls, scope);
+            if (slice.ast.sentinel.unwrap()) |sentinel| _ = search(ast, sentinel, decls, scope);
+            return null;
+        },
+        .call, .call_one, .call_comma, .call_one_comma => {
+            var buf: [1]Ast.Node.Index = undefined;
+            const full = ast.fullCall(&buf, node) orelse return null;
+            for (full.ast.params) |param| _ = search(ast, param, decls, scope);
+            _ = search(ast, full.ast.fn_expr, decls, scope);
+            return null;
+        },
+        .@"return" => {
+            if (ast.nodeData(node).opt_node.unwrap()) |return_value| _ = search(ast, return_value, decls, scope);
+            return null;
+        },
+        .grouped_expression, .unwrap_optional => {
+            _ = search(ast, ast.nodeData(node).node_and_token.@"0", decls, scope);
+            return null;
+        },
+        .switch_case_one, .switch_case, .switch_case_inline, .switch_case_inline_one => {
+            const full = ast.fullSwitchCase(node) orelse return null;
+            for (full.ast.values) |value| _ = search(ast, value, decls, scope);
+            return search(ast, full.ast.target_expr, decls, scope);
+        },
+        .switch_range => {
+            const lhs, const rhs = ast.nodeData(node).node_and_node;
+            _ = search(ast, lhs, decls, scope);
+            _ = search(ast, rhs, decls, scope);
+            return null;
+        },
+        .@"continue", .@"break" => {
+            _, const result = ast.nodeData(node).opt_token_and_opt_node;
+            if (result.unwrap()) |result_node| _ = search(ast, result_node, decls, scope);
+            return null;
+        },
+        .@"while", .while_cont, .while_simple => {
+            const full = ast.fullWhile(node) orelse return null;
+            _ = search(ast, full.ast.cond_expr, decls, scope);
+            _ = search(ast, full.ast.then_expr, decls, scope);
+            if (full.ast.cont_expr.unwrap()) |cont_node| _ = search(ast, cont_node, decls, scope);
+            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope);
+            return null;
+        },
+        .for_range, .for_simple, .@"for" => {
+            const full = ast.fullFor(node) orelse return null;
+            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope);
+            for (full.ast.inputs) |input| _ = search(ast, input, decls, scope);
+            _ = search(ast, full.ast.then_expr, decls, scope);
+            return null;
+        },
+        .@"if", .if_simple => {
+            const full = ast.fullIf(node) orelse return null;
+            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope);
+            _ = search(ast, full.ast.cond_expr, decls, scope);
+            _ = search(ast, full.ast.then_expr, decls, scope);
+            return null;
+        },
+        .array_access => {
+            const lhs, const rhs = ast.nodeData(node).node_and_node;
+            _ = search(ast, lhs, decls, scope);
+            _ = search(ast, rhs, decls, scope);
+            return null;
+        },
     };
 
     if (relevant_decl) |d|
@@ -381,11 +446,13 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
                 }) catch @panic("out  of memory!!!!");
             }
         };
+    var canary = relevant_decl;
     while (relevant_decl) |d| {
-        if (d.value == .shortcut)
-            relevant_decl = d.takeShortcut()
-        else
-            break;
+        if (d.value == .shortcut) {
+            relevant_decl = d.takeShortcut();
+            canary = if (relevant_decl) |post| post.takeShortcut() else null;
+            if (canary orelse continue == d) break;
+        } else break;
     }
     return relevant_decl;
 }
@@ -412,11 +479,17 @@ pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !v
             try writer.writeByte('\n');
         },
         .leaf => try writer.writeByte('\n'),
+        .func => try writer.writeByte('\n'),
     }
 }
+var update_index: usize = 0;
 fn outputUpdated(writer: std.io.AnyWriter, source: []const u8) !void {
     var range = source;
-    for (updates.items) |i| {
+    while (update_index < updates.items.len) : (update_index += 1) {
+        const i = updates.items[update_index];
+        if (@intFromPtr(i.original.ptr) >= @intFromPtr(range.ptr + range.len)) {
+            break;
+        }
         if (@intFromPtr(range.ptr) <= @intFromPtr(i.original.ptr) and @intFromPtr(i.original.ptr[i.original.len..]) <= @intFromPtr(range.ptr[range.len..])) {
             const equal_range = range[0 .. i.original.ptr - range.ptr];
             try writer.writeAll(equal_range);
@@ -431,6 +504,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     defer finds.deinit();
     updates = .init(gpa);
     defer updates.deinit();
+    update_index = 0;
     const known_file_size = if (input.stat()) |stat| stat.size + 1 else |_| 0;
     var file_buffer: std.ArrayList(u8) = try .initCapacity(arena, known_file_size);
     defer file_buffer.deinit();
@@ -451,10 +525,16 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     defer decls.deinit(gpa);
     for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
         try decls.put(gpa, &output.value.composed_type[i].value.value, r);
-        try updates.append(.{
-            .original = output.value.composed_type[i].name[0..r.prefix.len],
-            .replace = "",
-        });
+        if (output.value.composed_type[i].value.value != .func) {
+            try updates.append(.{
+                .original = output.value.composed_type[i].name[0..r.prefix.len],
+                .replace = "@\"",
+            });
+            try updates.append(.{
+                .original = output.value.composed_type[i].name[output.value.composed_type[i].name.len..output.value.composed_type[i].name.len],
+                .replace = "\"",
+            });
+        }
         break :get_reloc;
     };
     _ = search(ast, .root, decls, output.*);
@@ -466,12 +546,8 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     {
         const namespaces = try arena.alloc(std.ArrayListUnmanaged(u8), relocs.len);
         defer for (namespaces) |*namespace| namespace.deinit(gpa);
-        for (namespaces, relocs) |*namespace, reloc| {
+        for (namespaces) |*namespace| {
             namespace.* = .empty;
-            try std.fmt.format(namespace.writer(gpa).any(),
-                \\const {s} = struct {{
-                \\
-            , .{reloc.name});
         }
         const outs = output.value.composed_type;
         for (0..outs.len) |i| get_reloc: {
@@ -483,7 +559,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                         const full = ast.fullFnProto(&buf, decl.node).?;
                         if (full.extern_export_inline_token) |token| if (std.mem.eql(u8, ast.tokenSlice(token), "extern")) {
                             try std.fmt.format(n.writer(gpa).any(),
-                                \\const @"{s}" = @extern(*const fn
+                                \\pub const @"{s}" = @extern(*const fn
                             , .{
                                 ast.tokenSlice(full.name_token.?)[r.prefix.len..],
                             });
@@ -533,10 +609,20 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
             else
                 ast.source.ptr[ast.source.len..]));
         }
-        for (namespaces) |namespace| {
-            try output_file.writer().any().writeAll(namespace.items);
-            try output_file.writer().any().writeAll("\n};");
+        var last_namespace: ?[]const u8 = null;
+        for (namespaces, relocs) |namespace, reloc| {
+            if (last_namespace != null and !std.mem.eql(u8, last_namespace.?, reloc.name)) {
+                try output_file.writer().any().writeAll("};\n");
+            }
+            if (last_namespace != null and std.mem.eql(u8, last_namespace.?, reloc.name)) {
+                try output_file.writer().any().writeAll(namespace.items);
+            } else {
+                try std.fmt.format(output_file.writer().any(), "pub const {s} = struct {{\n", .{reloc.name});
+                try output_file.writer().any().writeAll(namespace.items);
+            }
+            last_namespace = reloc.name;
         }
+        try output_file.writer().any().writeAll("};\n");
     }
 }
 fn getContainerDecl(ast: Ast, decls: []const Ast.Node.Index, arena: std.mem.Allocator) std.mem.Allocator.Error!Declaration.Value {
@@ -572,7 +658,7 @@ fn getContainerDecl(ast: Ast, decls: []const Ast.Node.Index, arena: std.mem.Allo
             => .{
                 .node = decl_node_id,
                 .name = tokenSource(ast, node.main_token + 1),
-                .value = .{ .value = .leaf },
+                .value = .{ .value = .func },
             },
             .simple_var_decl,
             .aligned_var_decl,

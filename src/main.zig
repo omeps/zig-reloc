@@ -77,8 +77,8 @@ pub fn main() !void {
     _ = try root.run(arena.allocator(), allocator, if (in_file) |path| std.fs.cwd().openFile(path, .{}) catch |err| {
         std.fmt.format(stderr.writer().any(), "file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
-    } else std.io.getStdIn(), if (out_file) |path| std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |err| {
-        std.fmt.format(stderr.writer().any(), "file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
+    } else std.io.getStdIn(), if (out_file) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
+        std.fmt.format(stderr.writer().any(), "file create on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     } else std.io.getStdOut(), relocs.items);
 }
