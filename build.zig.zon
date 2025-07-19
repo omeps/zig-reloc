@@ -1,0 +1,16 @@
+.{
+    .name = .zig_reloc,
+
+    .version = "0.0.0",
+
+    .fingerprint = 0x710ef6c0e4d5609,
+    .minimum_zig_version = "0.15.0-dev.936+fc2c1883b",
+
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
