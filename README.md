@@ -6,11 +6,9 @@ On file include.h:
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL.h>
 ```
-<<<<<<< HEAD
 this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues: (currently stdin doesn't work, I will fix later)
 =======
 this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues:
->>>>>>> 7a60f5ec70517ada5f483d2dd5134f6d44abc378
 
 `zig translate-c -lc include.h > in.zig && zig-reloc in.zig -n Vk vk -n vk vk -n VK_ vk -n SDL_ sdl -n PRI pri -n SIZE_ size_ -o out.zig --checked; rm in.zig`
 
