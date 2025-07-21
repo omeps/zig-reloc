@@ -1,15 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("zig_reloc_lib");
-<<<<<<< HEAD
 const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o", @"--checked" };
-pub fn main() !void {
-    var stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
-    defer stdout.flush() catch {};
-    var stderr = std.io.bufferedWriter(std.io.getStdErr().writer());
-    defer stderr.flush() catch {};
-=======
-const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o" };
 var stdout_buf: [1024]u8 = undefined;
 var stderr_buf: [1024]u8 = undefined;
 pub fn main() !void {
@@ -17,7 +9,6 @@ pub fn main() !void {
     defer stdout.interface.flush() catch {};
     var stderr = std.fs.File.stderr().writer(&stderr_buf);
     defer stderr.interface.flush() catch {};
->>>>>>> dev
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (builtin.mode == .Debug) {
@@ -76,7 +67,7 @@ pub fn main() !void {
             },
             .@"-o", .@"--output" => {
                 if (out_file != null) {
-                    stderr.writer().writeAll("too many output files: only 1 is allowed\n") catch {};
+                    stderr.interface.writeAll("too many output files: only 1 is allowed\n") catch {};
                     return error.doubledFiles;
                 }
                 out_file = args.next() orelse {
@@ -89,7 +80,7 @@ pub fn main() !void {
             }
         } else {
             if (in_file != null) {
-                stderr.writer().writeAll("too many output files: only 1 is allowed\n") catch {};
+                stderr.interface.writeAll("too many output files: only 1 is allowed\n") catch {};
                 return error.doubledFiles;
             }
             in_file = arg;
@@ -102,14 +93,10 @@ pub fn main() !void {
     } else std.fs.File.stdin(), if (out_file) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
         stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
-<<<<<<< HEAD
-    } else std.io.getStdOut(), relocs.items);
+    } else std.fs.File.stdout(), relocs.items);
     if (run_check) return std.process.execv(allocator, &.{
         "zig",
         "ast-check",
         out_file orelse return error.missingOutputFile,
     });
-=======
-    } else std.fs.File.stdout(), relocs.items);
->>>>>>> dev
 }
