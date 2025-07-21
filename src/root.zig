@@ -482,7 +482,6 @@ pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !v
 }
 var update_index: usize = 0;
 fn outputUpdated(writer: *std.io.Writer, source: []const u8) !void {
-    std.debug.print("{s}\n", .{source});
     var range = source;
     while (update_index < updates.items.len) : (update_index += 1) {
         const i = updates.items[update_index];
