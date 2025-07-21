@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&exe_check.step);
     check_step.dependOn(&lib_check.step);
     const exe = b.addExecutable(.{
-        .name = "zig_reloc",
+        .name = "zig-reloc",
         .root_module = exe_mod,
     });
 
