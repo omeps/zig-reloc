@@ -1,12 +1,23 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("zig_reloc_lib");
+<<<<<<< HEAD
 const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o", @"--checked" };
 pub fn main() !void {
     var stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
     defer stdout.flush() catch {};
     var stderr = std.io.bufferedWriter(std.io.getStdErr().writer());
     defer stderr.flush() catch {};
+=======
+const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o" };
+var stdout_buf: [1024]u8 = undefined;
+var stderr_buf: [1024]u8 = undefined;
+pub fn main() !void {
+    var stdout = std.fs.File.stdout().writer(&stdout_buf);
+    defer stdout.interface.flush() catch {};
+    var stderr = std.fs.File.stderr().writer(&stderr_buf);
+    defer stderr.interface.flush() catch {};
+>>>>>>> dev
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (builtin.mode == .Debug) {
@@ -29,7 +40,7 @@ pub fn main() !void {
     while (args.next()) |arg| {
         if (std.meta.stringToEnum(Flag, arg)) |flag| switch (flag) {
             .@"-h", .@"--help" => {
-                try stdout.writer().writeAll(
+                try stdout.interface.writeAll(
                     \\zig-reloc version 0.0.0: move declarations in a zig file and attempt to 
                     \\fix all references to said declerations.
                     \\
@@ -50,15 +61,15 @@ pub fn main() !void {
             .@"-n", .@"--namespace" => {
                 relocs.append(allocator, .{
                     .prefix = args.next() orelse {
-                        stderr.writer().writeAll("too few args: -n requires 2 args, not 0") catch {};
+                        stderr.interface.writeAll("too few args: -n requires 2 args, not 0") catch {};
                         return error.tooFewArgs;
                     },
                     .name = args.next() orelse {
-                        stderr.writer().writeAll("too few args: -n requires 2 args, not 1") catch {};
+                        stderr.interface.writeAll("too few args: -n requires 2 args, not 1") catch {};
                         return error.tooFewArgs;
                     },
                 }) catch {
-                    stderr.writer().writeAll("out of memory") catch {};
+                    stderr.interface.writeAll("out of memory") catch {};
 
                     return error.outOfwMemory;
                 };
@@ -69,7 +80,7 @@ pub fn main() !void {
                     return error.doubledFiles;
                 }
                 out_file = args.next() orelse {
-                    stderr.writer().writeAll("too few args: -o requires an output file arg\n") catch {};
+                    stderr.interface.writeAll("too few args: -o requires an output file arg\n") catch {};
                     return error.tooFewArgs;
                 };
             },
@@ -86,15 +97,19 @@ pub fn main() !void {
     }
 
     _ = try root.run(arena.allocator(), allocator, if (in_file) |path| std.fs.cwd().openFile(path, .{}) catch |err| {
-        std.fmt.format(stderr.writer().any(), "file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
+        stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
-    } else std.io.getStdIn(), if (out_file) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
-        std.fmt.format(stderr.writer().any(), "file create on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
+    } else std.fs.File.stdin(), if (out_file) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
+        stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
+<<<<<<< HEAD
     } else std.io.getStdOut(), relocs.items);
     if (run_check) return std.process.execv(allocator, &.{
         "zig",
         "ast-check",
         out_file orelse return error.missingOutputFile,
     });
+=======
+    } else std.fs.File.stdout(), relocs.items);
+>>>>>>> dev
 }

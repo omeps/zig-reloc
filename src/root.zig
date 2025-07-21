@@ -116,8 +116,6 @@ pub const NamespaceRelocation = struct {
 };
 const DeclHashMap = std.AutoHashMapUnmanaged(*const Declaration.Value, NamespaceRelocation);
 pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declaration.ParentedValue) ?*const Declaration.ParentedValue {
-    //std.debug.print("(scope {s} parent {?s}) searching node: {s}\n", .{@tagName(scope.value), if (scope.parent) |p|@tagName(p.value) else null,ast.getNodeSource(node)});
-    //defer std.debug.print("ending search\n", .{});
     var relevant_decl: ?*const Declaration.ParentedValue = switch (ast.nodeTag(node)) {
         .@"errdefer",
         .test_decl,
@@ -483,7 +481,8 @@ pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !v
     }
 }
 var update_index: usize = 0;
-fn outputUpdated(writer: std.io.AnyWriter, source: []const u8) !void {
+fn outputUpdated(writer: *std.io.Writer, source: []const u8) !void {
+    std.debug.print("{s}\n", .{source});
     var range = source;
     while (update_index < updates.items.len) : (update_index += 1) {
         const i = updates.items[update_index];
@@ -506,15 +505,14 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     defer updates.deinit();
     update_index = 0;
     const known_file_size = if (input.stat()) |stat| stat.size + 1 else |_| 0;
-    var file_buffer: std.ArrayList(u8) = try .initCapacity(arena, known_file_size);
-    defer file_buffer.deinit();
-
-    input.reader().any().streamUntilDelimiter(file_buffer.writer().any(), 0, null) catch |err| switch (err) {
-        error.EndOfStream => {},
-        else => return err,
-    };
-    try file_buffer.append(0);
-
+    var file_buffer_writer: std.io.Writer.Allocating = try .initCapacity(gpa, known_file_size);
+    defer file_buffer_writer.deinit();
+    var in_buf: [1024]u8 = undefined;
+    var reader = input.reader(&in_buf);
+    _ = try file_buffer_writer.writer.sendFileAll(&reader, .unlimited);
+    var file_buffer = file_buffer_writer.toArrayList();
+    defer file_buffer.deinit(gpa);
+    if (file_buffer.items.len == 0 or file_buffer.items[file_buffer.items.len - 1] != 0) try file_buffer.append(gpa, 0);
     var ast: Ast = try .parse(gpa, file_buffer.items[0 .. file_buffer.items.len - 1 :0], .zig);
     defer ast.deinit(gpa);
     const output = try arena.create(Declaration.ParentedValue); //since this is on the arena no need to errdefer free
@@ -544,21 +542,26 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     output.value.sort_by_node(ast);
 
     {
-        const namespaces = try arena.alloc(std.ArrayListUnmanaged(u8), relocs.len);
-        defer for (namespaces) |*namespace| namespace.deinit(gpa);
+        const namespaces = try arena.alloc(std.io.Writer.Allocating, relocs.len);
+        var output_buf: [1024]u8 = undefined;
+        var output_writer = output_file.writer(&output_buf);
+        defer for (namespaces) |*namespace| namespace.deinit();
         for (namespaces) |*namespace| {
-            namespace.* = .empty;
+            namespace.* = .init(gpa);
         }
         const outs = output.value.composed_type;
         for (0..outs.len) |i| get_reloc: {
             const decl = outs[i];
             for (namespaces, relocs) |*n, r| if (std.mem.startsWith(u8, decl.name, r.prefix)) {
+                const writer = &n.writer;
+
+                defer writer.flush() catch {};
                 switch (ast.nodeTag(decl.node)) {
                     .fn_proto_simple, .fn_proto, .fn_proto_one, .fn_proto_multi => {
                         var buf: [1]Ast.Node.Index = undefined;
                         const full = ast.fullFnProto(&buf, decl.node).?;
                         if (full.extern_export_inline_token) |token| if (std.mem.eql(u8, ast.tokenSlice(token), "extern")) {
-                            try std.fmt.format(n.writer(gpa).any(),
+                            try writer.print(
                                 \\pub const @"{s}" = @extern(*const fn
                             , .{
                                 ast.tokenSlice(full.name_token.?)[r.prefix.len..],
@@ -567,36 +570,36 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                                 const proto_start = tokenSource(ast, full.ast.fn_token + 2);
                                 const proto_end = ast.getNodeSource(full.ast.return_type.unwrap().?);
                                 const proto = proto_start.ptr[0 .. proto_end.ptr - proto_start.ptr + proto_end.len];
-                                try outputUpdated(n.writer(gpa).any(), proto);
+                                try outputUpdated(writer, proto);
                             } else {
                                 const proto_start = tokenSource(ast, full.ast.fn_token + 2);
                                 const proto_end = ast.getNodeSource(full.ast.return_type.unwrap().?);
                                 const proto = proto_start.ptr[0 .. proto_end.ptr - proto_start.ptr];
-                                try outputUpdated(n.writer(gpa).any(), proto);
-                                try n.writer(gpa).any().writeAll(" callconv(.C) ");
-                                try outputUpdated(n.writer(gpa).any(), proto_end);
+                                try outputUpdated(writer, proto);
+                                try writer.writeAll(" callconv(.C) ");
+                                try outputUpdated(writer, proto_end);
                             }
-                            try std.fmt.format(n.writer(gpa).any(),
+                            try writer.print(
                                 \\, .{{
                                 \\  .name = "{s}",
                                 \\
                             , .{ast.tokenSlice(full.name_token.?)});
                             if (full.lib_name) |lib| {
-                                try std.fmt.format(n.writer(gpa).any(),
+                                try writer.print(
                                     \\  .lib_name = {s},
                                     \\
                                 , .{ast.tokenSlice(lib)});
                             }
-                            try std.fmt.format(n.writer(gpa).any(),
+                            try writer.print(
                                 \\}});
                                 \\
                             , .{});
                         } else {
-                            try outputUpdated(n.writer(gpa).any(), ast.getNodeSource(decl.node));
+                            try outputUpdated(writer, ast.getNodeSource(decl.node));
                         };
                     },
                     else => {
-                        try outputUpdated(n.writer(gpa).any(), sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
+                        try outputUpdated(writer, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
                             ast.getNodeSource(outs[i + 1].node).ptr
                         else
                             ast.source.ptr[ast.source.len..]));
@@ -604,25 +607,26 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                 }
                 break :get_reloc;
             };
-            try outputUpdated(output_file.writer().any(), sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
+            try outputUpdated(&output_writer.interface, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
                 ast.getNodeSource(outs[i + 1].node).ptr
             else
                 ast.source.ptr[ast.source.len..]));
         }
         var last_namespace: ?[]const u8 = null;
-        for (namespaces, relocs) |namespace, reloc| {
+        for (namespaces, relocs) |*namespace, reloc| {
             if (last_namespace != null and !std.mem.eql(u8, last_namespace.?, reloc.name)) {
-                try output_file.writer().any().writeAll("};\n");
+                try output_writer.interface.writeAll("};\n");
             }
             if (last_namespace != null and std.mem.eql(u8, last_namespace.?, reloc.name)) {
-                try output_file.writer().any().writeAll(namespace.items);
+                try output_writer.interface.writeAll(namespace.getWritten());
             } else {
-                try std.fmt.format(output_file.writer().any(), "pub const {s} = struct {{\n", .{reloc.name});
-                try output_file.writer().any().writeAll(namespace.items);
+                try output_writer.interface.print("pub const {s} = struct {{\n", .{reloc.name});
+                try output_writer.interface.writeAll(namespace.getWritten());
             }
             last_namespace = reloc.name;
         }
-        try output_file.writer().any().writeAll("};\n");
+        if (last_namespace != null) try output_writer.interface.writeAll("};\n");
+        try output_writer.interface.flush();
     }
 }
 fn getContainerDecl(ast: Ast, decls: []const Ast.Node.Index, arena: std.mem.Allocator) std.mem.Allocator.Error!Declaration.Value {
