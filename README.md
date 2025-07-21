@@ -6,7 +6,7 @@ On file include.h:
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL.h>
 ```
-this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues:
+this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues (currently stdin doesn't work):
 
 `zig translate-c -lc include.h > in.zig && zig-reloc in.zig -n Vk vk -n vk vk -n VK_ vk -n SDL_ sdl -n PRI pri -n SIZE_ size_ -o out.zig --checked; rm in.zig`
 
