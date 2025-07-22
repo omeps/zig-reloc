@@ -522,7 +522,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     defer decls.deinit(gpa);
     for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
         try decls.put(gpa, &output.value.composed_type[i].value.value, r);
-        if (output.value.composed_type[i].value.value != .func) {
+        if (output.value.composed_type[i].value.value != .func or ast.nodeTag(output.value.composed_type[i].node) == .fn_decl) {
             try updates.append(.{
                 .original = output.value.composed_type[i].name[0..r.prefix.len],
                 .replace = "@\"",
@@ -559,7 +559,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                     .fn_proto_simple, .fn_proto, .fn_proto_one, .fn_proto_multi => {
                         var buf: [1]Ast.Node.Index = undefined;
                         const full = ast.fullFnProto(&buf, decl.node).?;
-                        if (full.extern_export_inline_token) |token| if (std.mem.eql(u8, ast.tokenSlice(token), "extern")) {
+                        if (full.extern_export_inline_token != null and std.mem.eql(u8, ast.tokenSlice(full.extern_export_inline_token.?), "extern")) {
                             try writer.print(
                                 \\pub const @"{s}" = @extern(*const fn
                             , .{
@@ -595,7 +595,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                             , .{});
                         } else {
                             try outputUpdated(writer, ast.getNodeSource(decl.node));
-                        };
+                        }
                     },
                     else => {
                         try outputUpdated(writer, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
