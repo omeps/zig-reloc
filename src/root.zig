@@ -35,8 +35,6 @@ fn unraw(identifier: []const u8) []const u8 {
         return identifier;
     }
 }
-threadlocal var finds: std.ArrayList(findFlag) = undefined;
-threadlocal var updates: std.ArrayList(Update) = undefined;
 pub const Declaration = struct {
     const Value = union(enum) {
         composed_type: []Declaration,
@@ -114,13 +112,13 @@ pub const NamespaceRelocation = struct {
     prefix: []const u8,
     name: []const u8,
 };
-const DeclHashMap = std.AutoHashMapUnmanaged(*const Declaration.Value, NamespaceRelocation);
-pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declaration.ParentedValue) ?*const Declaration.ParentedValue {
+const RelocMap = std.AutoHashMapUnmanaged(*const Declaration.Value, NamespaceRelocation);
+pub fn search(ast: Ast, node: Ast.Node.Index, decls: RelocMap, scope: Declaration.ParentedValue, updates: *std.ArrayList(Update)) ?*const Declaration.ParentedValue {
     var relevant_decl: ?*const Declaration.ParentedValue = switch (ast.nodeTag(node)) {
         .@"errdefer",
         .test_decl,
         => {
-            _ = search(ast, ast.nodeData(node).opt_token_and_node.@"1", decls, scope);
+            _ = search(ast, ast.nodeData(node).opt_token_and_node.@"1", decls, scope, updates);
             return null;
         },
         .global_var_decl,
@@ -130,38 +128,38 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         => {
             const decl_nodes = ast.fullVarDecl(node).?.ast;
             const inner_scope = if (scope.findDecl(ast.tokenSlice(decl_nodes.mut_token + 1))) |inner| inner.* else scope;
-            if (decl_nodes.type_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
-            if (decl_nodes.align_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
-            if (decl_nodes.addrspace_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
-            if (decl_nodes.section_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
-            if (decl_nodes.init_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
+            if (decl_nodes.type_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
+            if (decl_nodes.align_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
+            if (decl_nodes.addrspace_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
+            if (decl_nodes.section_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
+            if (decl_nodes.init_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
             return null;
         },
         .root => {
             for (ast.rootDecls()) |d| {
-                _ = search(ast, d, decls, scope);
+                _ = search(ast, d, decls, scope, updates);
             }
             return null;
         },
         .@"defer" => {
-            _ = search(ast, ast.nodeData(node).node, decls, scope);
+            _ = search(ast, ast.nodeData(node).node, decls, scope, updates);
             return null;
         },
         .@"catch" => {
             const lhs, const rhs = ast.nodeData(node).node_and_node;
-            const left = search(ast, lhs, decls, scope);
-            const right = search(ast, rhs, decls, scope);
+            const left = search(ast, lhs, decls, scope, updates);
+            const right = search(ast, rhs, decls, scope, updates);
             return left orelse right;
         },
         .identifier => scope.findDecl(unraw(ast.tokenSlice(ast.nodeMainToken(node)))) orelse return null,
         .field_access => access: {
             const lhs, const a = ast.nodeData(node).node_and_token;
-            break :access (search(ast, lhs, decls, scope) orelse return null).value.findChildDecl(ast.tokenSlice(a));
+            break :access (search(ast, lhs, decls, scope, updates) orelse return null).value.findChildDecl(ast.tokenSlice(a));
         },
         .fn_decl => {
             const proto, const block = ast.nodeData(node).node_and_node;
-            _ = search(ast, block, decls, scope);
-            return search(ast, proto, decls, scope);
+            _ = search(ast, block, decls, scope, updates);
+            return search(ast, proto, decls, scope, updates);
         },
         .fn_proto,
         .fn_proto_one,
@@ -170,12 +168,12 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         => {
             var buf: [1]Ast.Node.Index = undefined;
             const data = (ast.fullFnProto(&buf, node) orelse return null).ast;
-            for (data.params) |p| _ = search(ast, p, decls, scope);
-            if (data.align_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            if (data.return_type.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            if (data.addrspace_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            if (data.section_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            if (data.callconv_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
+            for (data.params) |p| _ = search(ast, p, decls, scope, updates);
+            if (data.align_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            if (data.return_type.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            if (data.addrspace_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            if (data.section_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            if (data.callconv_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
             return null;
         },
         .block,
@@ -185,7 +183,7 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         => {
             var buf: [2]Ast.Node.Index = undefined;
             for (ast.blockStatements(&buf, node) orelse return null) |statement| {
-                _ = search(ast, statement, decls, scope);
+                _ = search(ast, statement, decls, scope, updates);
             }
             return null;
         },
@@ -199,7 +197,7 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
             var buf: [2]Ast.Node.Index = undefined;
             const full = (ast.fullContainerDecl(&buf, node) orelse return null).ast;
             for (full.members) |member| {
-                _ = search(ast, member, decls, scope);
+                _ = search(ast, member, decls, scope, updates);
             }
             return null;
         },
@@ -209,9 +207,9 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         => {
             const full = (ast.fullContainerField(node) orelse return null).ast;
             const inner_scope = if (scope.findDecl(ast.tokenSlice(full.main_token))) |inner| inner.* else scope;
-            if (full.align_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
-            if (full.type_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
-            if (full.value_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope);
+            if (full.align_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
+            if (full.type_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
+            if (full.value_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
             return null;
         },
         .array_init,
@@ -226,15 +224,15 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
             var buf: [2]Ast.Node.Index = undefined;
             const full = (ast.fullArrayInit(&buf, node) orelse return null).ast;
             for (full.elements) |element| {
-                _ = search(ast, element, decls, scope);
+                _ = search(ast, element, decls, scope, updates);
             }
             if (full.type_expr.unwrap()) |sub_node| {
-                _ = search(ast, sub_node, decls, scope);
+                _ = search(ast, sub_node, decls, scope, updates);
             }
             return null;
         },
         .optional_type => {
-            _ = search(ast, ast.nodeData(node).node, decls, scope);
+            _ = search(ast, ast.nodeData(node).node, decls, scope, updates);
             return null;
         },
         .ptr_type,
@@ -243,10 +241,10 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         .ptr_type_bit_range,
         => {
             const full = (ast.fullPtrType(node) orelse return null).ast;
-            if (full.align_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            if (full.addrspace_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            if (full.sentinel.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope);
-            _ = search(ast, full.child_type, decls, scope);
+            if (full.align_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            if (full.addrspace_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            if (full.sentinel.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
+            _ = search(ast, full.child_type, decls, scope, updates);
             return null;
         },
         .assign_mul,
@@ -297,8 +295,8 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         .array_mult,
         => {
             const lhs, const rhs = ast.nodeData(node).node_and_node;
-            _ = search(ast, lhs, decls, scope);
-            _ = search(ast, rhs, decls, scope);
+            _ = search(ast, lhs, decls, scope, updates);
+            _ = search(ast, rhs, decls, scope, updates);
             return null;
         },
         .struct_init_one,
@@ -312,15 +310,15 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         => {
             var buf: [2]Ast.Node.Index = undefined;
             const full = ast.fullStructInit(&buf, node) orelse return null;
-            for (full.ast.fields) |field| _ = search(ast, field, decls, scope);
-            if (full.ast.type_expr.unwrap()) |ty| return search(ast, ty, decls, scope);
+            for (full.ast.fields) |field| _ = search(ast, field, decls, scope, updates);
+            if (full.ast.type_expr.unwrap()) |ty| return search(ast, ty, decls, scope, updates);
             return null;
         },
         .@"switch", .switch_comma => {
             const full = ast.fullSwitch(node) orelse return null;
-            _ = search(ast, full.ast.condition, decls, scope);
+            _ = search(ast, full.ast.condition, decls, scope, updates);
             for (full.ast.cases) |case|
-                _ = search(ast, case, decls, scope);
+                _ = search(ast, case, decls, scope, updates);
             return null;
         },
         .@"try",
@@ -332,99 +330,94 @@ pub fn search(ast: Ast, node: Ast.Node.Index, decls: DeclHashMap, scope: Declara
         .bool_not,
         .bit_not,
         => {
-            return search(ast, ast.nodeData(node).node, decls, scope);
+            return search(ast, ast.nodeData(node).node, decls, scope, updates);
         },
         .array_type, .array_type_sentinel => {
             const full = ast.fullArrayType(node) orelse return null;
-            _ = search(ast, full.ast.elem_type, decls, scope);
-            _ = search(ast, full.ast.elem_count, decls, scope);
+            _ = search(ast, full.ast.elem_type, decls, scope, updates);
+            _ = search(ast, full.ast.elem_count, decls, scope, updates);
             if (full.ast.sentinel.unwrap()) |sentinel|
-                _ = search(ast, sentinel, decls, scope);
+                _ = search(ast, sentinel, decls, scope, updates);
             return null;
         },
         .builtin_call, .builtin_call_two, .builtin_call_comma, .builtin_call_two_comma => {
             var buffer: [2]Ast.Node.Index = undefined;
             const params = ast.builtinCallParams(&buffer, node) orelse return null;
-            for (params) |param| _ = search(ast, param, decls, scope);
+            for (params) |param| _ = search(ast, param, decls, scope, updates);
             return null;
         },
         else => return null,
         .slice, .slice_open, .slice_sentinel => {
             const slice = ast.fullSlice(node) orelse return null;
-            _ = search(ast, slice.ast.sliced, decls, scope);
-            _ = search(ast, slice.ast.start, decls, scope);
-            if (slice.ast.end.unwrap()) |end| _ = search(ast, end, decls, scope);
-            if (slice.ast.sentinel.unwrap()) |sentinel| _ = search(ast, sentinel, decls, scope);
+            _ = search(ast, slice.ast.sliced, decls, scope, updates);
+            _ = search(ast, slice.ast.start, decls, scope, updates);
+            if (slice.ast.end.unwrap()) |end| _ = search(ast, end, decls, scope, updates);
+            if (slice.ast.sentinel.unwrap()) |sentinel| _ = search(ast, sentinel, decls, scope, updates);
             return null;
         },
         .call, .call_one, .call_comma, .call_one_comma => {
             var buf: [1]Ast.Node.Index = undefined;
             const full = ast.fullCall(&buf, node) orelse return null;
-            for (full.ast.params) |param| _ = search(ast, param, decls, scope);
-            _ = search(ast, full.ast.fn_expr, decls, scope);
+            for (full.ast.params) |param| _ = search(ast, param, decls, scope, updates);
+            _ = search(ast, full.ast.fn_expr, decls, scope, updates);
             return null;
         },
         .@"return" => {
-            if (ast.nodeData(node).opt_node.unwrap()) |return_value| _ = search(ast, return_value, decls, scope);
+            if (ast.nodeData(node).opt_node.unwrap()) |return_value| _ = search(ast, return_value, decls, scope, updates);
             return null;
         },
         .grouped_expression, .unwrap_optional => {
-            _ = search(ast, ast.nodeData(node).node_and_token.@"0", decls, scope);
+            _ = search(ast, ast.nodeData(node).node_and_token.@"0", decls, scope, updates);
             return null;
         },
         .switch_case_one, .switch_case, .switch_case_inline, .switch_case_inline_one => {
             const full = ast.fullSwitchCase(node) orelse return null;
-            for (full.ast.values) |value| _ = search(ast, value, decls, scope);
-            return search(ast, full.ast.target_expr, decls, scope);
+            for (full.ast.values) |value| _ = search(ast, value, decls, scope, updates);
+            return search(ast, full.ast.target_expr, decls, scope, updates);
         },
         .switch_range => {
             const lhs, const rhs = ast.nodeData(node).node_and_node;
-            _ = search(ast, lhs, decls, scope);
-            _ = search(ast, rhs, decls, scope);
+            _ = search(ast, lhs, decls, scope, updates);
+            _ = search(ast, rhs, decls, scope, updates);
             return null;
         },
         .@"continue", .@"break" => {
             _, const result = ast.nodeData(node).opt_token_and_opt_node;
-            if (result.unwrap()) |result_node| _ = search(ast, result_node, decls, scope);
+            if (result.unwrap()) |result_node| _ = search(ast, result_node, decls, scope, updates);
             return null;
         },
         .@"while", .while_cont, .while_simple => {
             const full = ast.fullWhile(node) orelse return null;
-            _ = search(ast, full.ast.cond_expr, decls, scope);
-            _ = search(ast, full.ast.then_expr, decls, scope);
-            if (full.ast.cont_expr.unwrap()) |cont_node| _ = search(ast, cont_node, decls, scope);
-            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope);
+            _ = search(ast, full.ast.cond_expr, decls, scope, updates);
+            _ = search(ast, full.ast.then_expr, decls, scope, updates);
+            if (full.ast.cont_expr.unwrap()) |cont_node| _ = search(ast, cont_node, decls, scope, updates);
+            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope, updates);
             return null;
         },
         .for_range, .for_simple, .@"for" => {
             const full = ast.fullFor(node) orelse return null;
-            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope);
-            for (full.ast.inputs) |input| _ = search(ast, input, decls, scope);
-            _ = search(ast, full.ast.then_expr, decls, scope);
+            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope, updates);
+            for (full.ast.inputs) |input| _ = search(ast, input, decls, scope, updates);
+            _ = search(ast, full.ast.then_expr, decls, scope, updates);
             return null;
         },
         .@"if", .if_simple => {
             const full = ast.fullIf(node) orelse return null;
-            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope);
-            _ = search(ast, full.ast.cond_expr, decls, scope);
-            _ = search(ast, full.ast.then_expr, decls, scope);
+            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope, updates);
+            _ = search(ast, full.ast.cond_expr, decls, scope, updates);
+            _ = search(ast, full.ast.then_expr, decls, scope, updates);
             return null;
         },
         .array_access => {
             const lhs, const rhs = ast.nodeData(node).node_and_node;
-            _ = search(ast, lhs, decls, scope);
-            _ = search(ast, rhs, decls, scope);
+            _ = search(ast, lhs, decls, scope, updates);
+            _ = search(ast, rhs, decls, scope, updates);
             return null;
         },
     };
 
     if (relevant_decl) |d|
         if (decls.get(&d.value)) |reloc| {
-            const node_source = ast.getNodeSource(node);
-            finds.appendSlice(&.{
-                .{ .index = @intFromPtr(node_source.ptr) - @intFromPtr(ast.source.ptr), .flag_type = .start },
-                .{ .index = @intFromPtr(&node_source.ptr[node_source.len]) - @intFromPtr(ast.source.ptr), .flag_type = .end },
-            }) catch @panic("out of memory!!!!"); //FIX panic: propagate std.mem.Allocator.Error?
             const access_slice = switch (ast.nodeTag(node)) {
                 .field_access => ast.tokenSlice(ast.nodeData(node).node_and_token.@"1"),
                 //FIX for raw IDs later
@@ -481,10 +474,10 @@ pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !v
     }
 }
 var update_index: usize = 0;
-fn outputUpdated(writer: *std.io.Writer, source: []const u8) !void {
+fn outputUpdated(writer: *std.io.Writer, source: []const u8, updates: []Update) !void {
     var range = source;
-    while (update_index < updates.items.len) : (update_index += 1) {
-        const i = updates.items[update_index];
+    while (update_index < updates.len) : (update_index += 1) {
+        const i = updates[update_index];
         if (@intFromPtr(i.original.ptr) >= @intFromPtr(range.ptr + range.len)) {
             break;
         }
@@ -497,17 +490,38 @@ fn outputUpdated(writer: *std.io.Writer, source: []const u8) !void {
     }
     try writer.writeAll(range);
 }
+pub fn addNamespaceRelocs(gpa: std.mem.Allocator, ast: Ast, tree: *const Declaration.ParentedValue, relocs: []const NamespaceRelocation, map: *RelocMap, updates: *std.ArrayList(Update)) !void {
+    for (0..tree.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, tree.value.composed_type[i].name, r.prefix)) {
+        try map.put(gpa, &tree.value.composed_type[i].value.value, r);
+        if (tree.value.composed_type[i].value.value != .func or ast.nodeTag(tree.value.composed_type[i].node) == .fn_decl) {
+            try updates.append(.{
+                .original = tree.value.composed_type[i].name[0..r.prefix.len],
+                .replace = "@\"",
+            });
+            try updates.append(.{
+                .original = tree.value.composed_type[i].name[tree.value.composed_type[i].name.len..tree.value.composed_type[i].name.len],
+                .replace = "\"",
+            });
+        }
+        break :get_reloc;
+    };
+}
 pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File, output_file: std.fs.File, relocs: []const NamespaceRelocation) !void {
-    finds = .init(gpa);
-    defer finds.deinit();
-    updates = .init(gpa);
+    var updates: std.ArrayList(Update) = .init(gpa);
     defer updates.deinit();
     update_index = 0;
     const known_file_size = if (input.stat()) |stat| stat.size + 1 else |_| 0;
     var file_buffer_writer: std.io.Writer.Allocating = try .initCapacity(gpa, known_file_size);
     defer file_buffer_writer.deinit();
     var in_buf: [1024]u8 = undefined;
-    var reader = input.reader(&in_buf);
+    var reader = input.reader(&.{});
+    while (true) {
+        const read_len = reader.read(&in_buf) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+    };
+        try file_buffer_writer.writer.writeAll(in_buf[0..read_len]);
+    }
     _ = try file_buffer_writer.writer.sendFileAll(&reader, .unlimited);
     var file_buffer = file_buffer_writer.toArrayList();
     defer file_buffer.deinit(gpa);
@@ -518,25 +532,11 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     output.* = .{ .value = try getContainerDecl(ast, ast.rootDecls(), arena) };
     output.value.sort_by_name();
     output.reset_parents();
-    var decls: DeclHashMap = .empty;
+    var decls: RelocMap = .empty;
     defer decls.deinit(gpa);
-    for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
-        try decls.put(gpa, &output.value.composed_type[i].value.value, r);
-        if (output.value.composed_type[i].value.value != .func or ast.nodeTag(output.value.composed_type[i].node) == .fn_decl) {
-            try updates.append(.{
-                .original = output.value.composed_type[i].name[0..r.prefix.len],
-                .replace = "@\"",
-            });
-            try updates.append(.{
-                .original = output.value.composed_type[i].name[output.value.composed_type[i].name.len..output.value.composed_type[i].name.len],
-                .replace = "\"",
-            });
-        }
-        break :get_reloc;
-    };
-    _ = search(ast, .root, decls, output.*);
+    try addNamespaceRelocs(gpa, ast, output, relocs, &decls, &updates);
+    _ = search(ast, .root, decls, output.*, &updates);
 
-    std.mem.sortUnstable(findFlag, finds.items, {}, findFlag.cmp);
     std.mem.sort(Update, updates.items, {}, Update.cmp);
     output.value.sort_by_node(ast);
 
@@ -569,14 +569,14 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                                 const proto_start = tokenSource(ast, full.ast.fn_token + 2);
                                 const proto_end = ast.getNodeSource(full.ast.return_type.unwrap().?);
                                 const proto = proto_start.ptr[0 .. proto_end.ptr - proto_start.ptr + proto_end.len];
-                                try outputUpdated(writer, proto);
+                                try outputUpdated(writer, proto, updates.items);
                             } else {
                                 const proto_start = tokenSource(ast, full.ast.fn_token + 2);
                                 const proto_end = ast.getNodeSource(full.ast.return_type.unwrap().?);
                                 const proto = proto_start.ptr[0 .. proto_end.ptr - proto_start.ptr];
-                                try outputUpdated(writer, proto);
+                                try outputUpdated(writer, proto, updates.items);
                                 try writer.writeAll(" callconv(.C) ");
-                                try outputUpdated(writer, proto_end);
+                                try outputUpdated(writer, proto_end, updates.items);
                             }
                             try writer.print(
                                 \\, .{{
@@ -594,14 +594,14 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                                 \\
                             , .{});
                         } else {
-                            try outputUpdated(writer, ast.getNodeSource(decl.node));
+                            try outputUpdated(writer, ast.getNodeSource(decl.node), updates.items);
                         }
                     },
                     else => {
                         try outputUpdated(writer, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
                             ast.getNodeSource(outs[i + 1].node).ptr
                         else
-                            ast.source.ptr[ast.source.len..]));
+                            ast.source.ptr[ast.source.len..]), updates.items);
                     },
                 }
                 break :get_reloc;
@@ -609,7 +609,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
             try outputUpdated(&output_writer.interface, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
                 ast.getNodeSource(outs[i + 1].node).ptr
             else
-                ast.source.ptr[ast.source.len..]));
+                ast.source.ptr[ast.source.len..]), updates.items);
         }
         var last_namespace: ?[]const u8 = null;
         for (namespaces, relocs) |*namespace, reloc| {

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("zig_reloc_lib");
-const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o", @"--checked" };
+const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o", @"--checked", @"--formatted" };
 var stdout_buf: [1024]u8 = undefined;
 var stderr_buf: [1024]u8 = undefined;
 pub fn main() !void {
@@ -26,6 +26,7 @@ pub fn main() !void {
     var in_file: ?[]const u8 = null;
     var out_file: ?[]const u8 = null;
     var run_check = false;
+    var run_format = false;
     var relocs: std.ArrayListUnmanaged(root.NamespaceRelocation) = .empty;
     defer relocs.deinit(allocator);
     while (args.next()) |arg| {
@@ -77,7 +78,10 @@ pub fn main() !void {
             },
             .@"--checked" => {
                 run_check = true;
-            }
+            },
+            .@"--formatted" => {
+                run_format = true;
+        },
         } else {
             if (in_file != null) {
                 stderr.interface.writeAll("too many output files: only 1 is allowed\n") catch {};
@@ -94,9 +98,28 @@ pub fn main() !void {
         stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     } else std.fs.File.stdout(), relocs.items);
-    if (run_check) return std.process.execv(allocator, &.{
-        "zig",
-        "ast-check",
-        out_file orelse return error.missingOutputFile,
-    });
+    if (run_check) {
+        var checker = std.process.Child.init(&.{
+            "zig",
+            "ast-check",
+            out_file orelse return error.CheckWithoutOutputFile,
+        }, allocator);
+        const result = try checker.spawnAndWait();
+        switch (result) {
+            inline .Unknown, .Signal, .Stopped => |term, tag| try stderr.interface.print("{t} result on zig ast-check call: {}\n", .{ tag, term }),
+            .Exited => |code| if (code != 0) return error.CheckFail,
+        }
+    }
+    if (run_format) {
+        var checker = std.process.Child.init(&.{
+            "zig",
+            "fmt",
+            out_file orelse return error.FmtWithoutOutputFile,
+        }, allocator);
+        const result = try checker.spawnAndWait();
+        switch (result) {
+            inline .Unknown, .Signal, .Stopped => |term, tag| try stderr.interface.print("{t} result on zig fmt call: {}\n", .{ tag, term }),
+            .Exited => |code| if (code != 0) return error.formatFail,
+        }
+    }
 }
