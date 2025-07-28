@@ -36,7 +36,7 @@ pub fn main() !void {
                     \\zig-reloc version 0.0.0: move declarations in a zig file and attempt to 
                     \\fix all references to said declerations.
                     \\
-                    \\Usage: zig-reloc [FILE] [{{-n|--namespace} PREFIX NAME] ... [{-o|--output} FILE [--checked]]
+                    \\Usage: zig-reloc [FILE] [{{-n|--namespace} PREFIX NAME] ... [{-o|--output} FILE [--checked] [--formatted]]
                     \\If FILE is not provided, stdin will be used instead.
                     \\
                     \\ -n, --namespace        move all declarations with prefix PREFIX into a new  
@@ -44,6 +44,8 @@ pub fn main() !void {
                     \\ -o, --output           print output to FILE instead of stdout
                     \\
                     \\ --checked              run `zig ast-check` on output after finishing. 
+                    \\                        requires -o flag
+                    \\ --formatted            run `zig fmt` on output after finishing. 
                     \\                        requires -o flag
                     \\By omeps
                     \\
