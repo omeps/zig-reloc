@@ -6,13 +6,15 @@ On file include.h:
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL.h>
 ```
-this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues (currently stdin doesn't work):
+this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues:
 
-`zig translate-c -lc include.h > in.zig && zig-reloc in.zig -n Vk vk -n vk vk -n VK_ vk -n SDL_ sdl -n PRI pri -n SIZE_ size_ -o out.zig --checked; rm in.zig`
+`zig translate-c -lc include.h | zig-reloc in.zig -n Vk vk -n vk vk -n VK_ vk -n SDL_ sdl -n PRI pri -n SIZE_ size_ -o out.zig --checked --formatted`
 
 Each namespace is defined by a `-n`, a prefix to strip from declarations and a new name.
 
 `--checked` runs the output through `zig ast-check` for you.
+
+`--formatted` runs the output through `zig fmt` for you. This is necessary for autocomplete with zls because of how zig-reloc currently handles raw identifiers.
 
 Namespaces with the same name **defined next to each other** will be concatenated.
 
