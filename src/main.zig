@@ -1,7 +1,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("zig_reloc_lib");
-const Flag = enum { @"--help", @"-h", @"--namespace", @"-n", @"--output", @"-o", @"--checked", @"--formatted" };
+const Flag = enum {
+    @"--help",
+    @"-h",
+    @"--namespace",
+    @"-n",
+    @"--output",
+    @"-o",
+    @"--checked",
+    @"--formatted",
+    @"--styled",
+};
 var stdout_buf: [1024]u8 = undefined;
 var stderr_buf: [1024]u8 = undefined;
 pub fn main() !void {
@@ -23,30 +33,33 @@ pub fn main() !void {
     defer args.deinit();
 
     _ = args.skip();
-    var in_file: ?[]const u8 = null;
-    var out_file: ?[]const u8 = null;
+    var in_path: ?[]const u8 = null;
+    var out_path: ?[]const u8 = null;
     var run_check = false;
     var run_format = false;
+    var style: root.Style = .none;
     var relocs: std.ArrayListUnmanaged(root.NamespaceRelocation) = .empty;
     defer relocs.deinit(allocator);
     while (args.next()) |arg| {
         if (std.meta.stringToEnum(Flag, arg)) |flag| switch (flag) {
             .@"-h", .@"--help" => {
                 try stdout.interface.writeAll(
-                    \\zig-reloc version 0.0.0: move declarations in a zig file and attempt to 
-                    \\fix all references to said declerations.
+                    \\zig-reloc version 0.0.1: move declarations in a zig file and attempt to fix
+                    \\all references to said declarations.
                     \\
-                    \\Usage: zig-reloc [FILE] [{{-n|--namespace} PREFIX NAME] ... [{-o|--output} FILE [--checked] [--formatted]]
+                    \\Usage: zig-reloc [FILE] [{{-n|--namespace} PREFIX NAME] ... [{-o|--output} FILE [--checked] [--formatted]] [--styled]
                     \\If FILE is not provided, stdin will be used instead.
                     \\
                     \\ -n, --namespace        move all declarations with prefix PREFIX into a new  
                     \\                        namespace with name NAME
                     \\ -o, --output           print output to FILE instead of stdout
                     \\
-                    \\ --checked              run `zig ast-check` on output after finishing. 
+                    \\ --checked              run system `zig ast-check` on output after finishing. 
                     \\                        requires -o flag
-                    \\ --formatted            run `zig fmt` on output after finishing. 
+                    \\ --formatted            run system `zig fmt` on output after finishing. 
                     \\                        requires -o flag
+                    \\ --styled               make all moved declarations styled as described in
+                    \\                        https://ziglang.org/documentation/master/#Names.
                     \\By omeps
                     \\
                 );
@@ -69,11 +82,11 @@ pub fn main() !void {
                 };
             },
             .@"-o", .@"--output" => {
-                if (out_file != null) {
+                if (out_path != null) {
                     stderr.interface.writeAll("too many output files: only 1 is allowed\n") catch {};
                     return error.doubledFiles;
                 }
-                out_file = args.next() orelse {
+                out_path = args.next() orelse {
                     stderr.interface.writeAll("too few args: -o requires an output file arg\n") catch {};
                     return error.tooFewArgs;
                 };
@@ -83,28 +96,34 @@ pub fn main() !void {
             },
             .@"--formatted" => {
                 run_format = true;
-        },
+            },
+            .@"--styled" => {
+                style = .zig;
+            },
         } else {
-            if (in_file != null) {
+            if (in_path != null) {
                 stderr.interface.writeAll("too many output files: only 1 is allowed\n") catch {};
                 return error.doubledFiles;
             }
-            in_file = arg;
+            in_path = arg;
         }
     }
 
-    _ = try root.run(arena.allocator(), allocator, if (in_file) |path| std.fs.cwd().openFile(path, .{}) catch |err| {
+    const out_file: std.fs.File = if (out_path) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
         stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
-    } else std.fs.File.stdin(), if (out_file) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
+    } else std.fs.File.stdout();
+    var out_buffer: [4096]u8 = undefined;
+    var out_writer = out_file.writer(&out_buffer);
+    _ = try root.run(arena.allocator(), allocator, if (in_path) |path| std.fs.cwd().openFile(path, .{}) catch |err| {
         stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
-    } else std.fs.File.stdout(), relocs.items);
+    } else std.fs.File.stdin(), &out_writer.interface, relocs.items, style);
     if (run_check) {
         var checker = std.process.Child.init(&.{
             "zig",
             "ast-check",
-            out_file orelse return error.CheckWithoutOutputFile,
+            out_path orelse return error.CheckWithoutOutputFile,
         }, allocator);
         const result = try checker.spawnAndWait();
         switch (result) {
@@ -116,7 +135,7 @@ pub fn main() !void {
         var checker = std.process.Child.init(&.{
             "zig",
             "fmt",
-            out_file orelse return error.FmtWithoutOutputFile,
+            out_path orelse return error.FmtWithoutOutputFile,
         }, allocator);
         const result = try checker.spawnAndWait();
         switch (result) {

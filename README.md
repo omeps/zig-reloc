@@ -4,11 +4,10 @@
 On file include.h:
 ```c
 #include <vulkan/vulkan.h>
-#include <SDL3/SDL.h>
 ```
-this command will create namespaces for vulkan and SDL and uses extra namespaces to fix shadowing issues:
+this command will create namespaces for vulkan and rename declarations to the canonical Zig style:
 
-`zig translate-c -lc include.h | zig-reloc in.zig -n Vk vk -n vk vk -n VK_ vk -n SDL_ sdl -n PRI pri -n SIZE_ size_ -o out.zig --checked --formatted`
+`zig translate-c -lc include.h | zig-reloc in.zig -n Vk vk -n vk vk -n VK_ vk -o out.zig --checked --formatted --styled`
 
 Each namespace is defined by a `-n`, a prefix to strip from declarations and a new name.
 
@@ -16,11 +15,13 @@ Each namespace is defined by a `-n`, a prefix to strip from declarations and a n
 
 `--formatted` runs the output through `zig fmt` for you. This is necessary for autocomplete with zls because of how zig-reloc currently handles raw identifiers.
 
+`--styled` renames all moved declarations to the canonical Zig style 
+
 Namespaces with the same name **defined next to each other** will be concatenated.
 
 ### Building
 
-zig-reloc is built on the latest zig version, `0.15.0-dev.1149+4e6a04929`. I will move it to `0.15` when that is released. There are no additional dependencies.
+zig-reloc is always built on the latest zig version since the last commit (currently `0.15.0-dev.1283+1fcaf90dd`). I will move it to `0.15` when that is released. There are no additional dependencies.
 
 Build command:
 

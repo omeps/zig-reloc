@@ -28,6 +28,157 @@ const Update = struct {
         return std.sort.asc(usize)({}, @intFromPtr(a.original.ptr), @intFromPtr(b.original.ptr));
     }
 };
+pub const Case = enum {
+    camel,
+    pascal,
+    snake,
+    upper_snake,
+    const Iterator = struct {
+        case: Case,
+        buf: []const u8,
+        pub fn next(self: *Iterator) ?[]const u8 {
+            if (self.buf.len == 0) return null;
+            var i: usize = 1;
+            while (i < self.buf.len and switch (self.case) {
+                .pascal, .camel => (self.buf[i] < 'A' or 'Z' < self.buf[i]),
+                .snake, .upper_snake => self.buf[i] != '_',
+            }) {
+                i += 1;
+            }
+            defer self.buf = self.buf[i..];
+            const start: u1 = if (self.case == .snake or self.case == .upper_snake) if (self.buf[0] == '_') 1 else 0 else 0;
+            return self.buf[start..i];
+        }
+    };
+    pub fn determine(decl: Declaration.ParentedValue) Case {
+        return switch (decl.value) {
+            .func => .camel,
+            .composed_type => .pascal,
+            .typeof_shortcut => .snake,
+            .equals_shortcut => determine((decl.takeShortcut() orelse return .pascal).*),
+            .leaf => .snake,
+            .type => .pascal,
+        };
+    }
+    pub fn change(original: []const u8, new_case: Case, arena: std.mem.Allocator) error{OutOfMemory}![]const u8 {
+        var case_discrimination: enum {
+            any,
+            caps,
+            lowers,
+        } = .any;
+        const original_case: Case = determine_case: {
+            for (original) |char| {
+                switch (case_discrimination) {
+                    .any => {
+                        switch (char) {
+                            'a'...'z' => case_discrimination = .lowers,
+                            'A'...'Z' => case_discrimination = .caps,
+                            else => case_discrimination = .any,
+                        }
+                    },
+                    .caps => {
+                        switch (char) {
+                            'a'...'z' => break :determine_case .pascal,
+                            '_' => break :determine_case .upper_snake,
+                            else => {},
+                        }
+                    },
+                    .lowers => {
+                        switch (char) {
+                            'A'...'Z' => break :determine_case .camel,
+                            '_' => break :determine_case .snake,
+                            else => {},
+                        }
+                    },
+                }
+            }
+            if (case_discrimination == .lowers) break :determine_case .snake;
+            if (case_discrimination == .caps) break :determine_case .upper_snake;
+            return original;
+        };
+        if (original_case == new_case) return original;
+
+        var words: Iterator = .{ .case = original_case, .buf = original };
+        var total_len: usize = 0;
+        total_len += words.next().?.len;
+        while (words.next()) |word| {
+            total_len += word.len;
+            if (new_case == .snake or new_case == .upper_snake) total_len += 1;
+        }
+        const output = try arena.alloc(u8, total_len);
+        words = .{ .case = original_case, .buf = original };
+        var out_write = std.io.Writer.fixed(output);
+        {
+            const first_word = words.next().?;
+            const out_slice = out_write.writableSlice(first_word.len) catch unreachable;
+            switch (new_case) {
+                .camel, .snake => for (first_word, out_slice) |i, *o| {
+                    o.* = std.ascii.toLower(i);
+                },
+                .upper_snake => for (first_word, out_slice) |i, *o| {
+                    o.* = std.ascii.toUpper(i);
+                },
+                .pascal => if (first_word.len > 0) {
+                    out_slice[0] = std.ascii.toUpper(first_word[0]);
+                    for (first_word[1..], out_slice[1..]) |i, *o| {
+                        o.* = std.ascii.toLower(i);
+                    }
+                },
+            }
+        }
+        while (words.next()) |word| {
+            if (new_case == .snake or new_case == .upper_snake) out_write.writeByte('_') catch unreachable;
+            const out_slice = out_write.writableSlice(word.len) catch unreachable;
+            switch (new_case) {
+                .snake => for (word, out_slice) |i, *o| {
+                    o.* = std.ascii.toLower(i);
+                },
+                .upper_snake => for (word, out_slice) |i, *o| {
+                    o.* = std.ascii.toUpper(i);
+                },
+                .camel, .pascal => if (word.len > 0) {
+                    out_slice[0] = std.ascii.toUpper(word[0]);
+                    for (word[1..], out_slice[1..]) |i, *o| {
+                        o.* = std.ascii.toLower(i);
+                    }
+                },
+            }
+        }
+        return output;
+    }
+};
+test "upper_snake_case" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("SNAKE_CASE_OUTPUT", try Case.change("snake_case_output", .upper_snake, arena.allocator()));
+    try std.testing.expectEqualStrings("SNAKE_CASE_OUTPUT", try Case.change("SNAKE_CASE_OUTPUT", .upper_snake, arena.allocator()));
+    try std.testing.expectEqualStrings("SNAKE_CASE_OUTPUT", try Case.change("SnakeCaseOutput", .upper_snake, arena.allocator()));
+    try std.testing.expectEqualStrings("SNAKE_CASE_OUTPUT", try Case.change("snakeCaseOutput", .upper_snake, arena.allocator()));
+}
+test "pascal_case" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("PascalCaseOutput", try Case.change("pascal_case_output", .pascal, arena.allocator()));
+    try std.testing.expectEqualStrings("PascalCaseOutput", try Case.change("PASCAL_CASE_OUTPUT", .pascal, arena.allocator()));
+    try std.testing.expectEqualStrings("PascalCaseOutput", try Case.change("PascalCaseOutput", .pascal, arena.allocator()));
+    try std.testing.expectEqualStrings("PascalCaseOutput", try Case.change("pascalCaseOutput", .pascal, arena.allocator()));
+}
+test "snake_case" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("snake_case_output", try Case.change("snake_case_output", .snake, arena.allocator()));
+    try std.testing.expectEqualStrings("snake_case_output", try Case.change("SNAKE_CASE_OUTPUT", .snake, arena.allocator()));
+    try std.testing.expectEqualStrings("snake_case_output", try Case.change("SnakeCaseOutput", .snake, arena.allocator()));
+    try std.testing.expectEqualStrings("snake_case_output", try Case.change("snakeCaseOutput", .snake, arena.allocator()));
+}
+test "camel_case" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("camelCaseOutput", try Case.change("camel_case_output", .camel, arena.allocator()));
+    try std.testing.expectEqualStrings("camelCaseOutput", try Case.change("CAMEL_CASE_OUTPUT", .camel, arena.allocator()));
+    try std.testing.expectEqualStrings("camelCaseOutput", try Case.change("CamelCaseOutput", .camel, arena.allocator()));
+    try std.testing.expectEqualStrings("camelCaseOutput", try Case.change("camelCaseOutput", .camel, arena.allocator()));
+}
 fn unraw(identifier: []const u8) []const u8 {
     if (identifier.len > 0 and identifier[0] == '@') {
         return identifier[2 .. identifier.len - 1];
@@ -38,8 +189,10 @@ fn unraw(identifier: []const u8) []const u8 {
 pub const Declaration = struct {
     const Value = union(enum) {
         composed_type: []Declaration,
-        shortcut: []const []const u8,
+        typeof_shortcut: []const []const u8,
+        equals_shortcut: []const []const u8,
         leaf,
+        type,
         func,
         pub fn sort_by_name(self: Value) void {
             if (self == .composed_type) {
@@ -68,8 +221,10 @@ pub const Declaration = struct {
             return scope.value.findChildDecl(string) orelse (scope.parent orelse return null).findDecl(string);
         }
         pub fn takeShortcut(decl: Declaration.ParentedValue) ?*const Declaration.ParentedValue {
-            if (decl.value != .shortcut) return null;
-            const path = decl.value.shortcut;
+            const path = switch (decl.value) {
+                .typeof_shortcut, .equals_shortcut => |x| x,
+                else => return null,
+            };
             if (path.len == 0) return null;
             const parent = decl.parent orelse return null;
             var access = parent.findDecl(path[0]) orelse return null;
@@ -113,343 +268,571 @@ pub const NamespaceRelocation = struct {
     name: []const u8,
 };
 const RelocMap = std.AutoHashMapUnmanaged(*const Declaration.Value, NamespaceRelocation);
-pub fn search(ast: Ast, node: Ast.Node.Index, decls: RelocMap, scope: Declaration.ParentedValue, updates: *std.ArrayList(Update)) ?*const Declaration.ParentedValue {
-    var relevant_decl: ?*const Declaration.ParentedValue = switch (ast.nodeTag(node)) {
-        .@"errdefer",
-        .test_decl,
-        => {
-            _ = search(ast, ast.nodeData(node).opt_token_and_node.@"1", decls, scope, updates);
-            return null;
-        },
-        .global_var_decl,
-        .local_var_decl,
-        .simple_var_decl,
-        .aligned_var_decl,
-        => {
-            const decl_nodes = ast.fullVarDecl(node).?.ast;
-            const inner_scope = if (scope.findDecl(ast.tokenSlice(decl_nodes.mut_token + 1))) |inner| inner.* else scope;
-            if (decl_nodes.type_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            if (decl_nodes.align_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            if (decl_nodes.addrspace_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            if (decl_nodes.section_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            if (decl_nodes.init_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            return null;
-        },
-        .root => {
-            for (ast.rootDecls()) |d| {
-                _ = search(ast, d, decls, scope, updates);
-            }
-            return null;
-        },
-        .@"defer" => {
-            _ = search(ast, ast.nodeData(node).node, decls, scope, updates);
-            return null;
-        },
-        .@"catch" => {
-            const lhs, const rhs = ast.nodeData(node).node_and_node;
-            const left = search(ast, lhs, decls, scope, updates);
-            const right = search(ast, rhs, decls, scope, updates);
-            return left orelse right;
-        },
-        .identifier => scope.findDecl(unraw(ast.tokenSlice(ast.nodeMainToken(node)))) orelse return null,
-        .field_access => access: {
-            const lhs, const a = ast.nodeData(node).node_and_token;
-            break :access (search(ast, lhs, decls, scope, updates) orelse return null).value.findChildDecl(ast.tokenSlice(a));
-        },
-        .fn_decl => {
-            const proto, const block = ast.nodeData(node).node_and_node;
-            _ = search(ast, block, decls, scope, updates);
-            return search(ast, proto, decls, scope, updates);
-        },
-        .fn_proto,
-        .fn_proto_one,
-        .fn_proto_multi,
-        .fn_proto_simple,
-        => {
-            var buf: [1]Ast.Node.Index = undefined;
-            const data = (ast.fullFnProto(&buf, node) orelse return null).ast;
-            for (data.params) |p| _ = search(ast, p, decls, scope, updates);
-            if (data.align_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            if (data.return_type.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            if (data.addrspace_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            if (data.section_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            if (data.callconv_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            return null;
-        },
-        .block,
-        .block_two,
-        .block_semicolon,
-        .block_two_semicolon,
-        => {
-            var buf: [2]Ast.Node.Index = undefined;
-            for (ast.blockStatements(&buf, node) orelse return null) |statement| {
-                _ = search(ast, statement, decls, scope, updates);
-            }
-            return null;
-        },
-        .container_decl,
-        .container_decl_two,
-        .container_decl_arg,
-        .container_decl_trailing,
-        .container_decl_two_trailing,
-        .container_decl_arg_trailing,
-        => {
-            var buf: [2]Ast.Node.Index = undefined;
-            const full = (ast.fullContainerDecl(&buf, node) orelse return null).ast;
-            for (full.members) |member| {
-                _ = search(ast, member, decls, scope, updates);
-            }
-            return null;
-        },
-        .container_field,
-        .container_field_init,
-        .container_field_align,
-        => {
-            const full = (ast.fullContainerField(node) orelse return null).ast;
-            const inner_scope = if (scope.findDecl(ast.tokenSlice(full.main_token))) |inner| inner.* else scope;
-            if (full.align_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            if (full.type_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            if (full.value_expr.unwrap()) |sub_node| _ = search(ast, sub_node, decls, inner_scope, updates);
-            return null;
-        },
-        .array_init,
-        .array_init_one,
-        .array_init_dot,
-        .array_init_comma,
-        .array_init_dot_two,
-        .array_init_one_comma,
-        .array_init_dot_two_comma,
-        .array_init_dot_comma,
-        => {
-            var buf: [2]Ast.Node.Index = undefined;
-            const full = (ast.fullArrayInit(&buf, node) orelse return null).ast;
-            for (full.elements) |element| {
-                _ = search(ast, element, decls, scope, updates);
-            }
-            if (full.type_expr.unwrap()) |sub_node| {
-                _ = search(ast, sub_node, decls, scope, updates);
-            }
-            return null;
-        },
-        .optional_type => {
-            _ = search(ast, ast.nodeData(node).node, decls, scope, updates);
-            return null;
-        },
-        .ptr_type,
-        .ptr_type_aligned,
-        .ptr_type_sentinel,
-        .ptr_type_bit_range,
-        => {
-            const full = (ast.fullPtrType(node) orelse return null).ast;
-            if (full.align_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            if (full.addrspace_node.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            if (full.sentinel.unwrap()) |sub_node| _ = search(ast, sub_node, decls, scope, updates);
-            _ = search(ast, full.child_type, decls, scope, updates);
-            return null;
-        },
-        .assign_mul,
-        .assign_div,
-        .assign_mod,
-        .assign_add,
-        .assign_sub,
-        .assign_shl,
-        .assign_shr,
-        .assign_bit_or,
-        .assign_shl_sat,
-        .assign_bit_and,
-        .assign_bit_xor,
-        .assign_mul_sat,
-        .assign_add_sat,
-        .assign_sub_sat,
-        .assign_mul_wrap,
-        .assign_add_wrap,
-        .assign_sub_wrap,
-        .assign,
-        .bit_or,
-        .bit_and,
-        .bit_xor,
-        .@"orelse",
-        .bool_or,
-        .bool_and,
-        .bang_equal,
-        .equal_equal,
-        .less_than,
-        .less_or_equal,
-        .greater_or_equal,
-        .greater_than,
-        .mul,
-        .mul_sat,
-        .mul_wrap,
-        .div,
-        .add,
-        .add_sat,
-        .add_wrap,
-        .sub,
-        .sub_wrap,
-        .sub_sat,
-        .shl,
-        .shl_sat,
-        .shr,
-        .mod,
-        .array_cat,
-        .array_mult,
-        => {
-            const lhs, const rhs = ast.nodeData(node).node_and_node;
-            _ = search(ast, lhs, decls, scope, updates);
-            _ = search(ast, rhs, decls, scope, updates);
-            return null;
-        },
-        .struct_init_one,
-        .struct_init_dot,
-        .struct_init,
-        .struct_init_comma,
-        .struct_init_dot_two,
-        .struct_init_one_comma,
-        .struct_init_dot_comma,
-        .struct_init_dot_two_comma,
-        => {
-            var buf: [2]Ast.Node.Index = undefined;
-            const full = ast.fullStructInit(&buf, node) orelse return null;
-            for (full.ast.fields) |field| _ = search(ast, field, decls, scope, updates);
-            if (full.ast.type_expr.unwrap()) |ty| return search(ast, ty, decls, scope, updates);
-            return null;
-        },
-        .@"switch", .switch_comma => {
-            const full = ast.fullSwitch(node) orelse return null;
-            _ = search(ast, full.ast.condition, decls, scope, updates);
-            for (full.ast.cases) |case|
-                _ = search(ast, case, decls, scope, updates);
-            return null;
-        },
-        .@"try",
-        .@"comptime",
-        .negation,
-        .negation_wrap,
-        .address_of,
-        .deref,
-        .bool_not,
-        .bit_not,
-        => {
-            return search(ast, ast.nodeData(node).node, decls, scope, updates);
-        },
-        .array_type, .array_type_sentinel => {
-            const full = ast.fullArrayType(node) orelse return null;
-            _ = search(ast, full.ast.elem_type, decls, scope, updates);
-            _ = search(ast, full.ast.elem_count, decls, scope, updates);
-            if (full.ast.sentinel.unwrap()) |sentinel|
-                _ = search(ast, sentinel, decls, scope, updates);
-            return null;
-        },
-        .builtin_call, .builtin_call_two, .builtin_call_comma, .builtin_call_two_comma => {
-            var buffer: [2]Ast.Node.Index = undefined;
-            const params = ast.builtinCallParams(&buffer, node) orelse return null;
-            for (params) |param| _ = search(ast, param, decls, scope, updates);
-            return null;
-        },
-        else => return null,
-        .slice, .slice_open, .slice_sentinel => {
-            const slice = ast.fullSlice(node) orelse return null;
-            _ = search(ast, slice.ast.sliced, decls, scope, updates);
-            _ = search(ast, slice.ast.start, decls, scope, updates);
-            if (slice.ast.end.unwrap()) |end| _ = search(ast, end, decls, scope, updates);
-            if (slice.ast.sentinel.unwrap()) |sentinel| _ = search(ast, sentinel, decls, scope, updates);
-            return null;
-        },
-        .call, .call_one, .call_comma, .call_one_comma => {
-            var buf: [1]Ast.Node.Index = undefined;
-            const full = ast.fullCall(&buf, node) orelse return null;
-            for (full.ast.params) |param| _ = search(ast, param, decls, scope, updates);
-            _ = search(ast, full.ast.fn_expr, decls, scope, updates);
-            return null;
-        },
-        .@"return" => {
-            if (ast.nodeData(node).opt_node.unwrap()) |return_value| _ = search(ast, return_value, decls, scope, updates);
-            return null;
-        },
-        .grouped_expression, .unwrap_optional => {
-            _ = search(ast, ast.nodeData(node).node_and_token.@"0", decls, scope, updates);
-            return null;
-        },
-        .switch_case_one, .switch_case, .switch_case_inline, .switch_case_inline_one => {
-            const full = ast.fullSwitchCase(node) orelse return null;
-            for (full.ast.values) |value| _ = search(ast, value, decls, scope, updates);
-            return search(ast, full.ast.target_expr, decls, scope, updates);
-        },
-        .switch_range => {
-            const lhs, const rhs = ast.nodeData(node).node_and_node;
-            _ = search(ast, lhs, decls, scope, updates);
-            _ = search(ast, rhs, decls, scope, updates);
-            return null;
-        },
-        .@"continue", .@"break" => {
-            _, const result = ast.nodeData(node).opt_token_and_opt_node;
-            if (result.unwrap()) |result_node| _ = search(ast, result_node, decls, scope, updates);
-            return null;
-        },
-        .@"while", .while_cont, .while_simple => {
-            const full = ast.fullWhile(node) orelse return null;
-            _ = search(ast, full.ast.cond_expr, decls, scope, updates);
-            _ = search(ast, full.ast.then_expr, decls, scope, updates);
-            if (full.ast.cont_expr.unwrap()) |cont_node| _ = search(ast, cont_node, decls, scope, updates);
-            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope, updates);
-            return null;
-        },
-        .for_range, .for_simple, .@"for" => {
-            const full = ast.fullFor(node) orelse return null;
-            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope, updates);
-            for (full.ast.inputs) |input| _ = search(ast, input, decls, scope, updates);
-            _ = search(ast, full.ast.then_expr, decls, scope, updates);
-            return null;
-        },
-        .@"if", .if_simple => {
-            const full = ast.fullIf(node) orelse return null;
-            if (full.ast.else_expr.unwrap()) |else_node| _ = search(ast, else_node, decls, scope, updates);
-            _ = search(ast, full.ast.cond_expr, decls, scope, updates);
-            _ = search(ast, full.ast.then_expr, decls, scope, updates);
-            return null;
-        },
-        .array_access => {
-            const lhs, const rhs = ast.nodeData(node).node_and_node;
-            _ = search(ast, lhs, decls, scope, updates);
-            _ = search(ast, rhs, decls, scope, updates);
-            return null;
-        },
-    };
+pub const Style = enum {
+    zig,
+    none,
+};
+const SearchContext = struct {
+    ast: Ast,
+    decls: RelocMap,
+    updates: *std.ArrayList(Update),
+    styling: Style,
+    arena: std.mem.Allocator,
 
-    if (relevant_decl) |d|
-        if (decls.get(&d.value)) |reloc| {
-            const access_slice = switch (ast.nodeTag(node)) {
-                .field_access => ast.tokenSlice(ast.nodeData(node).node_and_token.@"1"),
+    pub fn search(context: SearchContext, node: Ast.Node.Index, scope: Declaration.ParentedValue) !?*const Declaration.ParentedValue {
+        var relevant_decl: ?*const Declaration.ParentedValue = switch (context.ast.nodeTag(node)) {
+            .@"errdefer",
+            .test_decl,
+            => {
+                _ = try context.search(
+                    context.ast.nodeData(node).opt_token_and_node.@"1",
+                    scope,
+                );
+                return null;
+            },
+            .global_var_decl,
+            .local_var_decl,
+            .simple_var_decl,
+            .aligned_var_decl,
+            => {
+                const decl_nodes = context.ast.fullVarDecl(node).?.ast;
+                const inner_scope = if (scope.findDecl(context.ast.tokenSlice(decl_nodes.mut_token + 1))) |inner| inner.* else scope;
+                if (decl_nodes.type_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                if (decl_nodes.align_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                if (decl_nodes.addrspace_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                if (decl_nodes.section_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                if (decl_nodes.init_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                return null;
+            },
+            .root => {
+                for (context.ast.rootDecls()) |d| {
+                    _ = try context.search(
+                        d,
+                        scope,
+                    );
+                }
+                return null;
+            },
+            .@"defer" => {
+                _ = try context.search(
+                    context.ast.nodeData(node).node,
+                    scope,
+                );
+                return null;
+            },
+            .@"catch" => {
+                const lhs, const rhs = context.ast.nodeData(node).node_and_node;
+                const left = try context.search(
+                    lhs,
+                    scope,
+                );
+                const right = try context.search(
+                    rhs,
+                    scope,
+                );
+                return left orelse right;
+            },
+            .identifier => scope.findDecl(unraw(context.ast.tokenSlice(context.ast.nodeMainToken(node)))) orelse return null,
+            .field_access => access: {
+                const lhs, const a = context.ast.nodeData(node).node_and_token;
+                break :access (try context.search(
+                    lhs,
+                    scope,
+                ) orelse return null).value.findChildDecl(context.ast.tokenSlice(a));
+            },
+            .fn_decl => {
+                const proto, const block = context.ast.nodeData(node).node_and_node;
+                _ = try context.search(
+                    block,
+                    scope,
+                );
+                return try context.search(
+                    proto,
+                    scope,
+                );
+            },
+            .fn_proto,
+            .fn_proto_one,
+            .fn_proto_multi,
+            .fn_proto_simple,
+            => {
+                var buf: [1]Ast.Node.Index = undefined;
+                const data = (context.ast.fullFnProto(&buf, node) orelse return null).ast;
+                for (data.params) |p| _ = try context.search(
+                    p,
+                    scope,
+                );
+                if (data.align_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                if (data.return_type.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                if (data.addrspace_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                if (data.section_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                if (data.callconv_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                return null;
+            },
+            .block,
+            .block_two,
+            .block_semicolon,
+            .block_two_semicolon,
+            => {
+                var buf: [2]Ast.Node.Index = undefined;
+                for (context.ast.blockStatements(&buf, node) orelse return null) |statement| {
+                    _ = try context.search(
+                        statement,
+                        scope,
+                    );
+                }
+                return null;
+            },
+            .container_decl,
+            .container_decl_two,
+            .container_decl_arg,
+            .container_decl_trailing,
+            .container_decl_two_trailing,
+            .container_decl_arg_trailing,
+            => {
+                var buf: [2]Ast.Node.Index = undefined;
+                const full = (context.ast.fullContainerDecl(&buf, node) orelse return null).ast;
+                for (full.members) |member| {
+                    _ = try context.search(
+                        member,
+                        scope,
+                    );
+                }
+                return null;
+            },
+            .container_field,
+            .container_field_init,
+            .container_field_align,
+            => {
+                const full = (context.ast.fullContainerField(node) orelse return null).ast;
+                const inner_scope = if (scope.findDecl(context.ast.tokenSlice(full.main_token))) |inner| inner.* else scope;
+                if (full.align_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                if (full.type_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                if (full.value_expr.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    inner_scope,
+                );
+                return null;
+            },
+            .array_init,
+            .array_init_one,
+            .array_init_dot,
+            .array_init_comma,
+            .array_init_dot_two,
+            .array_init_one_comma,
+            .array_init_dot_two_comma,
+            .array_init_dot_comma,
+            => {
+                var buf: [2]Ast.Node.Index = undefined;
+                const full = (context.ast.fullArrayInit(&buf, node) orelse return null).ast;
+                for (full.elements) |element| {
+                    _ = try context.search(
+                        element,
+                        scope,
+                    );
+                }
+                if (full.type_expr.unwrap()) |sub_node| {
+                    _ = try context.search(
+                        sub_node,
+                        scope,
+                    );
+                }
+                return null;
+            },
+            .optional_type => {
+                _ = try context.search(
+                    context.ast.nodeData(node).node,
+                    scope,
+                );
+                return null;
+            },
+            .ptr_type,
+            .ptr_type_aligned,
+            .ptr_type_sentinel,
+            .ptr_type_bit_range,
+            => {
+                const full = (context.ast.fullPtrType(node) orelse return null).ast;
+                if (full.align_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                if (full.addrspace_node.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                if (full.sentinel.unwrap()) |sub_node| _ = try context.search(
+                    sub_node,
+                    scope,
+                );
+                _ = try context.search(
+                    full.child_type,
+                    scope,
+                );
+                return null;
+            },
+            .assign_mul,
+            .assign_div,
+            .assign_mod,
+            .assign_add,
+            .assign_sub,
+            .assign_shl,
+            .assign_shr,
+            .assign_bit_or,
+            .assign_shl_sat,
+            .assign_bit_and,
+            .assign_bit_xor,
+            .assign_mul_sat,
+            .assign_add_sat,
+            .assign_sub_sat,
+            .assign_mul_wrap,
+            .assign_add_wrap,
+            .assign_sub_wrap,
+            .assign,
+            .bit_or,
+            .bit_and,
+            .bit_xor,
+            .@"orelse",
+            .bool_or,
+            .bool_and,
+            .bang_equal,
+            .equal_equal,
+            .less_than,
+            .less_or_equal,
+            .greater_or_equal,
+            .greater_than,
+            .mul,
+            .mul_sat,
+            .mul_wrap,
+            .div,
+            .add,
+            .add_sat,
+            .add_wrap,
+            .sub,
+            .sub_wrap,
+            .sub_sat,
+            .shl,
+            .shl_sat,
+            .shr,
+            .mod,
+            .array_cat,
+            .array_mult,
+            => {
+                const lhs, const rhs = context.ast.nodeData(node).node_and_node;
+                _ = try context.search(
+                    lhs,
+                    scope,
+                );
+                _ = try context.search(
+                    rhs,
+                    scope,
+                );
+                return null;
+            },
+            .struct_init_one,
+            .struct_init_dot,
+            .struct_init,
+            .struct_init_comma,
+            .struct_init_dot_two,
+            .struct_init_one_comma,
+            .struct_init_dot_comma,
+            .struct_init_dot_two_comma,
+            => {
+                var buf: [2]Ast.Node.Index = undefined;
+                const full = context.ast.fullStructInit(&buf, node) orelse return null;
+                for (full.ast.fields) |field| _ = try context.search(
+                    field,
+                    scope,
+                );
+                if (full.ast.type_expr.unwrap()) |ty| return try context.search(
+                    ty,
+                    scope,
+                );
+                return null;
+            },
+            .@"switch", .switch_comma => {
+                const full = context.ast.fullSwitch(node) orelse return null;
+                _ = try context.search(
+                    full.ast.condition,
+                    scope,
+                );
+                for (full.ast.cases) |case|
+                    _ = try context.search(
+                        case,
+                        scope,
+                    );
+                return null;
+            },
+            .@"try",
+            .@"comptime",
+            .negation,
+            .negation_wrap,
+            .address_of,
+            .deref,
+            .bool_not,
+            .bit_not,
+            => {
+                return try context.search(
+                    context.ast.nodeData(node).node,
+                    scope,
+                );
+            },
+            .array_type, .array_type_sentinel => {
+                const full = context.ast.fullArrayType(node) orelse return null;
+                _ = try context.search(
+                    full.ast.elem_type,
+                    scope,
+                );
+                _ = try context.search(
+                    full.ast.elem_count,
+                    scope,
+                );
+                if (full.ast.sentinel.unwrap()) |sentinel|
+                    _ = try context.search(
+                        sentinel,
+                        scope,
+                    );
+                return null;
+            },
+            .builtin_call, .builtin_call_two, .builtin_call_comma, .builtin_call_two_comma => {
+                var buffer: [2]Ast.Node.Index = undefined;
+                const params = context.ast.builtinCallParams(&buffer, node) orelse return null;
+                for (params) |param| _ = try context.search(
+                    param,
+                    scope,
+                );
+                return null;
+            },
+            else => return null,
+            .slice, .slice_open, .slice_sentinel => {
+                const slice = context.ast.fullSlice(node) orelse return null;
+                _ = try context.search(
+                    slice.ast.sliced,
+                    scope,
+                );
+                _ = try context.search(
+                    slice.ast.start,
+                    scope,
+                );
+                if (slice.ast.end.unwrap()) |end| _ = try context.search(
+                    end,
+                    scope,
+                );
+                if (slice.ast.sentinel.unwrap()) |sentinel| _ = try context.search(
+                    sentinel,
+                    scope,
+                );
+                return null;
+            },
+            .call, .call_one, .call_comma, .call_one_comma => {
+                var buf: [1]Ast.Node.Index = undefined;
+                const full = context.ast.fullCall(&buf, node) orelse return null;
+                for (full.ast.params) |param| _ = try context.search(
+                    param,
+                    scope,
+                );
+                _ = try context.search(
+                    full.ast.fn_expr,
+                    scope,
+                );
+                return null;
+            },
+            .@"return" => {
+                if (context.ast.nodeData(node).opt_node.unwrap()) |return_value| _ = try context.search(
+                    return_value,
+                    scope,
+                );
+                return null;
+            },
+            .grouped_expression, .unwrap_optional => {
+                _ = try context.search(
+                    context.ast.nodeData(node).node_and_token.@"0",
+                    scope,
+                );
+                return null;
+            },
+            .switch_case_one, .switch_case, .switch_case_inline, .switch_case_inline_one => {
+                const full = context.ast.fullSwitchCase(node) orelse return null;
+                for (full.ast.values) |value| _ = try context.search(
+                    value,
+                    scope,
+                );
+                return try context.search(
+                    full.ast.target_expr,
+                    scope,
+                );
+            },
+            .switch_range => {
+                const lhs, const rhs = context.ast.nodeData(node).node_and_node;
+                _ = try context.search(
+                    lhs,
+                    scope,
+                );
+                _ = try context.search(
+                    rhs,
+                    scope,
+                );
+                return null;
+            },
+            .@"continue", .@"break" => {
+                _, const result = context.ast.nodeData(node).opt_token_and_opt_node;
+                if (result.unwrap()) |result_node| _ = try context.search(
+                    result_node,
+                    scope,
+                );
+                return null;
+            },
+            .@"while", .while_cont, .while_simple => {
+                const full = context.ast.fullWhile(node) orelse return null;
+                _ = try context.search(
+                    full.ast.cond_expr,
+                    scope,
+                );
+                _ = try context.search(
+                    full.ast.then_expr,
+                    scope,
+                );
+                if (full.ast.cont_expr.unwrap()) |cont_node| _ = try context.search(
+                    cont_node,
+                    scope,
+                );
+                if (full.ast.else_expr.unwrap()) |else_node| _ = try context.search(
+                    else_node,
+                    scope,
+                );
+                return null;
+            },
+            .for_range, .for_simple, .@"for" => {
+                const full = context.ast.fullFor(node) orelse return null;
+                if (full.ast.else_expr.unwrap()) |else_node| _ = try context.search(
+                    else_node,
+                    scope,
+                );
+                for (full.ast.inputs) |input| _ = try context.search(
+                    input,
+                    scope,
+                );
+                _ = try context.search(
+                    full.ast.then_expr,
+                    scope,
+                );
+                return null;
+            },
+            .@"if", .if_simple => {
+                const full = context.ast.fullIf(node) orelse return null;
+                if (full.ast.else_expr.unwrap()) |else_node| _ = try context.search(
+                    else_node,
+                    scope,
+                );
+                _ = try context.search(
+                    full.ast.cond_expr,
+                    scope,
+                );
+                _ = try context.search(
+                    full.ast.then_expr,
+                    scope,
+                );
+                return null;
+            },
+            .array_access => {
+                const lhs, const rhs = context.ast.nodeData(node).node_and_node;
+                _ = try context.search(
+                    lhs,
+                    scope,
+                );
+                _ = try context.search(
+                    rhs,
+                    scope,
+                );
+                return null;
+            },
+        };
+
+        if (relevant_decl) |d| if (context.decls.get(&d.value)) |reloc| {
+            const access_slice = switch (context.ast.nodeTag(node)) {
+                .field_access => context.ast.tokenSlice(context.ast.nodeData(node).node_and_token.@"1"),
                 //FIX for raw IDs later
-                .identifier => ast.tokenSlice(ast.nodeMainToken(node)),
+                .identifier => context.ast.tokenSlice(context.ast.nodeMainToken(node)),
                 else => null,
             };
             if (access_slice) |s| {
-                updates.appendSlice(&[_]Update{
-                    .{
-                        .original = s[0..reloc.prefix.len],
-                        .replace = reloc.name,
+                try context.updates.appendSlice(switch (context.styling) {
+                    .zig => &[_]Update{
+                        .{
+                            .original = s[0..reloc.prefix.len],
+                            .replace = reloc.name,
+                        },
+                        .{
+                            .original = s[reloc.prefix.len..reloc.prefix.len],
+                            .replace = ".",
+                        },
+                        .{
+                            .original = s[reloc.prefix.len..],
+                            .replace = try Case.change(s[reloc.prefix.len..], .determine(d.*), context.arena),
+                        },
                     },
-                    .{
-                        .original = s[reloc.prefix.len..reloc.prefix.len],
-                        .replace = ".",
+                    .none => &[_]Update{
+                        .{
+                            .original = s[0..reloc.prefix.len],
+                            .replace = reloc.name,
+                        },
+                        .{
+                            .original = s[reloc.prefix.len..reloc.prefix.len],
+                            .replace = ".",
+                        },
                     },
-                }) catch @panic("out  of memory!!!!");
+                });
             }
         };
-    var canary = relevant_decl;
-    while (relevant_decl) |d| {
-        if (d.value == .shortcut) {
-            relevant_decl = d.takeShortcut();
-            canary = if (relevant_decl) |post| post.takeShortcut() else null;
-            if (canary orelse continue == d) break;
-        } else break;
+        var canary = relevant_decl;
+        while (relevant_decl) |d| {
+            if (d.value == .typeof_shortcut or d.value == .equals_shortcut) {
+                relevant_decl = d.takeShortcut();
+                canary = if (relevant_decl) |post| post.takeShortcut() else null;
+                if (canary orelse continue == d) break;
+            } else break;
+        }
+        return relevant_decl;
     }
-    return relevant_decl;
-}
-pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !void {
+};
+pub fn prettyprint(writer: *std.io.Writer, tree: Declaration, depth: usize) !void {
     if (depth > 0) {
-        try writer.writeByteNTimes(' ', depth -% 1);
+        try writer.splatByteAll(' ', depth -% 1);
         try writer.writeAll("└");
     }
     try writer.writeAll(tree.name);
@@ -460,7 +843,7 @@ pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !v
                 try prettyprint(writer, decl, depth + 1);
             }
         },
-        .shortcut => |fields| {
+        .typeof_shortcut, .equals_shortcut => |fields| {
             try writer.writeAll(" -> ");
             try writer.writeAll(fields[0]);
             for (fields[1..]) |field| {
@@ -470,6 +853,7 @@ pub fn prettyprint(writer: std.io.AnyWriter, tree: Declaration, depth: usize) !v
             try writer.writeByte('\n');
         },
         .leaf => try writer.writeByte('\n'),
+        .type => try writer.writeByte('\n'),
         .func => try writer.writeByte('\n'),
     }
 }
@@ -490,23 +874,7 @@ fn outputUpdated(writer: *std.io.Writer, source: []const u8, updates: []Update) 
     }
     try writer.writeAll(range);
 }
-pub fn addNamespaceRelocs(gpa: std.mem.Allocator, ast: Ast, tree: *const Declaration.ParentedValue, relocs: []const NamespaceRelocation, map: *RelocMap, updates: *std.ArrayList(Update)) !void {
-    for (0..tree.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, tree.value.composed_type[i].name, r.prefix)) {
-        try map.put(gpa, &tree.value.composed_type[i].value.value, r);
-        if (tree.value.composed_type[i].value.value != .func or ast.nodeTag(tree.value.composed_type[i].node) == .fn_decl) {
-            try updates.append(.{
-                .original = tree.value.composed_type[i].name[0..r.prefix.len],
-                .replace = "@\"",
-            });
-            try updates.append(.{
-                .original = tree.value.composed_type[i].name[tree.value.composed_type[i].name.len..tree.value.composed_type[i].name.len],
-                .replace = "\"",
-            });
-        }
-        break :get_reloc;
-    };
-}
-pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File, output_file: std.fs.File, relocs: []const NamespaceRelocation) !void {
+pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File, output_writer: *std.io.Writer, relocs: []const NamespaceRelocation, styling: Style) !void {
     var updates: std.ArrayList(Update) = .init(gpa);
     defer updates.deinit();
     update_index = 0;
@@ -519,7 +887,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
         const read_len = reader.read(&in_buf) catch |err| switch (err) {
             error.EndOfStream => break,
             else => return err,
-    };
+        };
         try file_buffer_writer.writer.writeAll(in_buf[0..read_len]);
     }
     _ = try file_buffer_writer.writer.sendFileAll(&reader, .unlimited);
@@ -534,16 +902,43 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
     output.reset_parents();
     var decls: RelocMap = .empty;
     defer decls.deinit(gpa);
-    try addNamespaceRelocs(gpa, ast, output, relocs, &decls, &updates);
-    _ = search(ast, .root, decls, output.*, &updates);
+    for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
+        try decls.put(gpa, &output.value.composed_type[i].value.value, r);
+        if (output.value.composed_type[i].value.value != .func or ast.nodeTag(output.value.composed_type[i].node) == .fn_decl) {
+            try updates.append(.{
+                .original = output.value.composed_type[i].name[0..r.prefix.len],
+                .replace = "@\"",
+            });
+            if (styling == .zig)
+                try updates.append(.{
+                    .original = output.value.composed_type[i].name[r.prefix.len..],
+                    .replace = try Case.change(output.value.composed_type[i].name[r.prefix.len..], .determine(output.value.composed_type[i].value), arena),
+                });
+            try updates.append(.{
+                .original = output.value.composed_type[i].name[output.value.composed_type[i].name.len..output.value.composed_type[i].name.len],
+                .replace = "\"",
+            });
+        }
+        break :get_reloc;
+    };
+
+    _ = try SearchContext.search(
+        .{
+            .ast = ast,
+            .decls = decls,
+            .updates = &updates,
+            .styling = styling,
+            .arena = arena,
+        },
+        .root,
+        output.*,
+    );
 
     std.mem.sort(Update, updates.items, {}, Update.cmp);
     output.value.sort_by_node(ast);
 
     {
         const namespaces = try arena.alloc(std.io.Writer.Allocating, relocs.len);
-        var output_buf: [1024]u8 = undefined;
-        var output_writer = output_file.writer(&output_buf);
         defer for (namespaces) |*namespace| namespace.deinit();
         for (namespaces) |*namespace| {
             namespace.* = .init(gpa);
@@ -562,9 +957,10 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                         if (full.extern_export_inline_token != null and std.mem.eql(u8, ast.tokenSlice(full.extern_export_inline_token.?), "extern")) {
                             try writer.print(
                                 \\pub const @"{s}" = @extern(*const fn
-                            , .{
-                                ast.tokenSlice(full.name_token.?)[r.prefix.len..],
-                            });
+                            , .{switch (styling) {
+                                .zig => try Case.change(ast.tokenSlice(full.name_token.?)[r.prefix.len..], .camel, arena),
+                                .none => ast.tokenSlice(full.name_token.?)[r.prefix.len..],
+                            }});
                             if (full.ast.callconv_expr.unwrap() != null) {
                                 const proto_start = tokenSource(ast, full.ast.fn_token + 2);
                                 const proto_end = ast.getNodeSource(full.ast.return_type.unwrap().?);
@@ -606,7 +1002,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
                 }
                 break :get_reloc;
             };
-            try outputUpdated(&output_writer.interface, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
+            try outputUpdated(output_writer, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
                 ast.getNodeSource(outs[i + 1].node).ptr
             else
                 ast.source.ptr[ast.source.len..]), updates.items);
@@ -614,18 +1010,18 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File,
         var last_namespace: ?[]const u8 = null;
         for (namespaces, relocs) |*namespace, reloc| {
             if (last_namespace != null and !std.mem.eql(u8, last_namespace.?, reloc.name)) {
-                try output_writer.interface.writeAll("};\n");
+                try output_writer.writeAll("};\n");
             }
             if (last_namespace != null and std.mem.eql(u8, last_namespace.?, reloc.name)) {
-                try output_writer.interface.writeAll(namespace.getWritten());
+                try output_writer.writeAll(namespace.getWritten());
             } else {
-                try output_writer.interface.print("pub const {s} = struct {{\n", .{reloc.name});
-                try output_writer.interface.writeAll(namespace.getWritten());
+                try output_writer.print("pub const {s} = struct {{\n", .{reloc.name});
+                try output_writer.writeAll(namespace.getWritten());
             }
             last_namespace = reloc.name;
         }
-        if (last_namespace != null) try output_writer.interface.writeAll("};\n");
-        try output_writer.interface.flush();
+        if (last_namespace != null) try output_writer.writeAll("};\n");
+        try output_writer.flush();
     }
 }
 fn getContainerDecl(ast: Ast, decls: []const Ast.Node.Index, arena: std.mem.Allocator) std.mem.Allocator.Error!Declaration.Value {
@@ -698,14 +1094,14 @@ fn getContainerDecl(ast: Ast, decls: []const Ast.Node.Index, arena: std.mem.Allo
 fn getType(ast: Ast, type_node: Ast.Node.OptionalIndex, arena: std.mem.Allocator) !?Declaration.Value {
     const i = type_node.unwrap() orelse return null;
     return switch (ast.nodeTag(i)) {
-        .identifier => .{ .shortcut = shortcut: {
+        .identifier => .{ .typeof_shortcut = shortcut: {
             const name = ast.tokenSlice(ast.nodeMainToken(i));
             if (std.mem.eql(u8, name, "type")) return null;
             const buf = try arena.alloc([]const u8, 1);
             buf[0] = try arena.dupe(u8, unraw(name));
             break :shortcut buf;
         } },
-        .field_access => .{ .shortcut = shortcut: {
+        .field_access => .{ .typeof_shortcut = shortcut: {
             var current_node = i;
             var identifier_count: usize = 1;
             while (ast.nodeTag(current_node) == .field_access) {
@@ -724,7 +1120,6 @@ fn getType(ast: Ast, type_node: Ast.Node.OptionalIndex, arena: std.mem.Allocator
             buf[0] = try arena.dupe(u8, ast.tokenSlice(ast.nodeMainToken(current_node)));
             break :shortcut buf;
         } },
-
         else => null,
     };
 }
@@ -744,12 +1139,12 @@ fn getValue(ast: Ast, decl: Ast.Node.OptionalIndex, arena: std.mem.Allocator) !?
             const container_decl = ast.fullContainerDecl(&buf, i) orelse return null;
             break :container_decl try getContainerDecl(ast, container_decl.ast.members, arena);
         },
-        .identifier => .{ .shortcut = shortcut: {
+        .identifier => .{ .equals_shortcut = shortcut: {
             const buf = try arena.alloc([]const u8, 1);
             buf[0] = try arena.dupe(u8, unraw(ast.tokenSlice(ast.nodeMainToken(i))));
             break :shortcut buf;
         } },
-        .field_access => .{ .shortcut = shortcut: {
+        .field_access => .{ .equals_shortcut = shortcut: {
             var current_node = i;
             var identifier_count: usize = 1;
             while (ast.nodeTag(current_node) == .field_access) {
@@ -770,6 +1165,8 @@ fn getValue(ast: Ast, decl: Ast.Node.OptionalIndex, arena: std.mem.Allocator) !?
         } },
         //TODO implement
         .struct_init => null,
+
+        .array_type, .optional_type, .anyframe_type, .array_type_sentinel, .ptr_type, .ptr_type_aligned, .ptr_type_sentinel, .ptr_type_bit_range => .type,
         else => null,
     };
 }
