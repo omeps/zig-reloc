@@ -21,7 +21,7 @@ Namespaces with the same name **defined next to each other** will be concatenate
 
 ### Building
 
-zig-reloc is always built on the latest zig version since the last commit (currently `0.15.0-dev.1283+1fcaf90dd`). I will move it to `0.15` when that is released. There are no additional dependencies.
+zig-reloc is always built on the latest zig version since the last commit (currently `0.15.0-dev.1425+7ee6dab39`). I will move it to `0.15` when that is released. There are no additional dependencies.
 
 Build command:
 

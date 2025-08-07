@@ -874,28 +874,11 @@ fn outputUpdated(writer: *std.io.Writer, source: []const u8, updates: []Update) 
     }
     try writer.writeAll(range);
 }
-pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, input: std.fs.File, output_writer: *std.io.Writer, relocs: []const NamespaceRelocation, styling: Style) !void {
+pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_writer: *std.io.Writer, relocs: []const NamespaceRelocation, styling: Style) !void {
     var updates: std.ArrayList(Update) = .init(gpa);
     defer updates.deinit();
     update_index = 0;
-    const known_file_size = if (input.stat()) |stat| stat.size + 1 else |_| 0;
-    var file_buffer_writer: std.io.Writer.Allocating = try .initCapacity(gpa, known_file_size);
-    defer file_buffer_writer.deinit();
-    var in_buf: [1024]u8 = undefined;
-    var reader = input.reader(&.{});
-    while (true) {
-        const read_len = reader.read(&in_buf) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
-        try file_buffer_writer.writer.writeAll(in_buf[0..read_len]);
-    }
-    _ = try file_buffer_writer.writer.sendFileAll(&reader, .unlimited);
-    var file_buffer = file_buffer_writer.toArrayList();
-    defer file_buffer.deinit(gpa);
-    if (file_buffer.items.len == 0 or file_buffer.items[file_buffer.items.len - 1] != 0) try file_buffer.append(gpa, 0);
-    var ast: Ast = try .parse(gpa, file_buffer.items[0 .. file_buffer.items.len - 1 :0], .zig);
-    defer ast.deinit(gpa);
+    
     const output = try arena.create(Declaration.ParentedValue); //since this is on the arena no need to errdefer free
     output.* = .{ .value = try getContainerDecl(ast, ast.rootDecls(), arena) };
     output.value.sort_by_name();

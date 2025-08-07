@@ -108,17 +108,37 @@ pub fn main() !void {
             in_path = arg;
         }
     }
-
+    const input = if (in_path) |path| std.fs.cwd().openFile(path, .{}) catch |err| {
+        stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
+        return err;
+    } else std.fs.File.stdin();
+    defer input.close();
+    const known_file_size = if (input.stat()) |stat| stat.size + 1 else |_| 0;
+    var file_buffer_writer: std.io.Writer.Allocating = try .initCapacity(allocator, known_file_size);
+    defer file_buffer_writer.deinit();
+    var in_buf: [1024]u8 = undefined;
+    var reader = input.reader(&.{});
+    while (true) {
+        const read_len = reader.read(&in_buf) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        try file_buffer_writer.writer.writeAll(in_buf[0..read_len]);
+    }
+    _ = try file_buffer_writer.writer.sendFileAll(&reader, .unlimited);
+    var file_buffer = file_buffer_writer.toArrayList();
+    defer file_buffer.deinit(allocator);
+    if (file_buffer.items.len == 0 or file_buffer.items[file_buffer.items.len - 1] != 0) try file_buffer.append(allocator, 0);
+    var ast: std.zig.Ast = try .parse(allocator, file_buffer.items[0 .. file_buffer.items.len - 1 :0], .zig);
+    defer ast.deinit(allocator);
     const out_file: std.fs.File = if (out_path) |path| std.fs.cwd().createFile(path, .{}) catch |err| {
         stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     } else std.fs.File.stdout();
     var out_buffer: [4096]u8 = undefined;
     var out_writer = out_file.writer(&out_buffer);
-    _ = try root.run(arena.allocator(), allocator, if (in_path) |path| std.fs.cwd().openFile(path, .{}) catch |err| {
-        stderr.interface.print("file open on {s} failed: {s}\n", .{ path, @errorName(err) }) catch {};
-        return err;
-    } else std.fs.File.stdin(), &out_writer.interface, relocs.items, style);
+
+    _ = try root.run(arena.allocator(), allocator, ast, &out_writer.interface, relocs.items, style);
     if (run_check) {
         var checker = std.process.Child.init(&.{
             "zig",
