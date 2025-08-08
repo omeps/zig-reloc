@@ -209,15 +209,15 @@ pub const Declaration = struct {
                 std.mem.sortUnstable(Declaration, decls, ast, cmp_nodes);
             }
         }
-        pub fn findChildDecl(scope: Declaration.Value, string: []const u8) ?*const Declaration.ParentedValue {
+        pub fn findChildDecl(scope: Declaration.Value, string: []const u8) ?*const Declaration {
             if (scope != .composed_type) return null;
-            return &scope.composed_type[std.sort.binarySearch(Declaration, scope.composed_type, string, order_name) orelse return null].value;
+            return &scope.composed_type[std.sort.binarySearch(Declaration, scope.composed_type, string, order_name) orelse return null];
         }
     };
     const ParentedValue = struct {
         value: Value,
         parent: ?*const ParentedValue = null,
-        pub fn findDecl(scope: Declaration.ParentedValue, string: []const u8) ?*const Declaration.ParentedValue {
+        pub fn findDecl(scope: Declaration.ParentedValue, string: []const u8) ?*const Declaration {
             return scope.value.findChildDecl(string) orelse (scope.parent orelse return null).findDecl(string);
         }
         pub fn takeShortcut(decl: Declaration.ParentedValue) ?*const Declaration.ParentedValue {
@@ -227,9 +227,9 @@ pub const Declaration = struct {
             };
             if (path.len == 0) return null;
             const parent = decl.parent orelse return null;
-            var access = parent.findDecl(path[0]) orelse return null;
+            var access = &(parent.findDecl(path[0]) orelse return null).value;
             for (path[1..]) |segment| {
-                access = access.value.findChildDecl(segment) orelse return null;
+                access = &(access.value.findChildDecl(segment) orelse return null).value;
             }
             return access;
         }
@@ -278,7 +278,6 @@ const SearchContext = struct {
     updates: *std.ArrayList(Update),
     styling: Style,
     arena: std.mem.Allocator,
-
     pub fn search(context: SearchContext, node: Ast.Node.Index, scope: Declaration.ParentedValue) !?*const Declaration.ParentedValue {
         var relevant_decl: ?*const Declaration.ParentedValue = switch (context.ast.nodeTag(node)) {
             .@"errdefer",
@@ -296,7 +295,7 @@ const SearchContext = struct {
             .aligned_var_decl,
             => {
                 const decl_nodes = context.ast.fullVarDecl(node).?.ast;
-                const inner_scope = if (scope.findDecl(context.ast.tokenSlice(decl_nodes.mut_token + 1))) |inner| inner.* else scope;
+                const inner_scope = if (scope.findDecl(context.ast.tokenSlice(decl_nodes.mut_token + 1))) |inner| inner.value else scope;
                 if (decl_nodes.type_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
@@ -347,13 +346,13 @@ const SearchContext = struct {
                 );
                 return left orelse right;
             },
-            .identifier => scope.findDecl(unraw(context.ast.tokenSlice(context.ast.nodeMainToken(node)))) orelse return null,
+            .identifier => &(scope.findDecl(unraw(context.ast.tokenSlice(context.ast.nodeMainToken(node)))) orelse return null).value,
             .field_access => access: {
                 const lhs, const a = context.ast.nodeData(node).node_and_token;
-                break :access (try context.search(
+                break :access &((try context.search(
                     lhs,
                     scope,
-                ) orelse return null).value.findChildDecl(context.ast.tokenSlice(a));
+                ) orelse return null).value.findChildDecl(context.ast.tokenSlice(a)) orelse return null).value;
             },
             .fn_decl => {
                 const proto, const block = context.ast.nodeData(node).node_and_node;
@@ -435,7 +434,7 @@ const SearchContext = struct {
             .container_field_align,
             => {
                 const full = (context.ast.fullContainerField(node) orelse return null).ast;
-                const inner_scope = if (scope.findDecl(context.ast.tokenSlice(full.main_token))) |inner| inner.* else scope;
+                const inner_scope = if (scope.findDecl(context.ast.tokenSlice(full.main_token))) |inner| inner.value else scope;
                 if (full.align_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
@@ -878,14 +877,14 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
     var updates: std.ArrayList(Update) = .init(gpa);
     defer updates.deinit();
     update_index = 0;
-    
+
     const output = try arena.create(Declaration.ParentedValue); //since this is on the arena no need to errdefer free
     output.* = .{ .value = try getContainerDecl(ast, ast.rootDecls(), arena) };
     output.value.sort_by_name();
     output.reset_parents();
     var decls: RelocMap = .empty;
     defer decls.deinit(gpa);
-    for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
+    for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (output.value.composed_type[i].name.len > r.prefix.len and std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
         try decls.put(gpa, &output.value.composed_type[i].value.value, r);
         if (output.value.composed_type[i].value.value != .func or ast.nodeTag(output.value.composed_type[i].node) == .fn_decl) {
             try updates.append(.{
@@ -927,9 +926,11 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
             namespace.* = .init(gpa);
         }
         const outs = output.value.composed_type;
+        var final_output_list: std.ArrayList(usize) = .init(gpa);
+        defer final_output_list.deinit();
         for (0..outs.len) |i| get_reloc: {
             const decl = outs[i];
-            for (namespaces, relocs) |*n, r| if (std.mem.startsWith(u8, decl.name, r.prefix)) {
+            for (namespaces, relocs) |*n, r| if (decl.name.len > r.prefix.len and std.mem.startsWith(u8, decl.name, r.prefix)) {
                 const writer = &n.writer;
 
                 defer writer.flush() catch {};
@@ -985,25 +986,98 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
                 }
                 break :get_reloc;
             };
+            try final_output_list.append(i);
+        }
+
+        output.value.sort_by_name();
+
+        const NamespaceFinder = union(enum) {
+            preexisting: usize,
+            new,
+        };
+        var last_namespace: ?[]const u8 = null;
+        var namespace_finder: NamespaceFinder = .new;
+        for (namespaces, relocs) |*namespace, reloc| {
+            if (last_namespace == null or !std.mem.eql(u8, last_namespace.?, reloc.name)) {
+                if (last_namespace != null and namespace_finder == .new) try output_writer.writeAll("};\n");
+                namespace_finder = get_finder: {
+                    if (output.value.findChildDecl(reloc.name)) |_decl| {
+                        var decl = _decl;
+                        const original_source: *const Declaration = follow: switch (decl.value.value) {
+                            .composed_type => break :follow decl,
+                            .typeof_shortcut, .equals_shortcut => {
+                                decl = @fieldParentPtr("value", (decl.value.takeShortcut() orelse break :get_finder .new));
+                                continue :follow decl.value.value;
+                            },
+                            .type => {
+                                var current_node = decl.node;
+                                subt: switch (ast.nodeTag(current_node)) {
+                                    .local_var_decl,
+                                    .global_var_decl,
+                                    .simple_var_decl,
+                                    .aligned_var_decl,
+                                    => {
+                                        const var_decl = ast.fullVarDecl(current_node).?.ast;
+                                        current_node = var_decl.init_node.unwrap() orelse var_decl.type_node.unwrap() orelse break :get_finder .new;
+                                        continue :subt ast.nodeTag(current_node);
+                                    },
+                                    .identifier => {
+                                        break :follow output.findDecl(ast.tokenSlice(ast.nodeMainToken(current_node))) orelse break :get_finder .new;
+                                    },
+                                    .optional_type => {
+                                        current_node = ast.nodeData(current_node).node;
+                                        continue :subt ast.nodeTag(current_node);
+                                    },
+                                    .array_type,
+                                    .array_type_sentinel,
+                                    => {
+                                        current_node = ast.fullArrayType(current_node).?.ast.elem_type;
+                                        continue :subt ast.nodeTag(current_node);
+                                    },
+                                    .ptr_type, .ptr_type_aligned, .ptr_type_sentinel, .ptr_type_bit_range => {
+                                        current_node = ast.fullPtrType(current_node).?.ast.child_type;
+                                        continue :subt ast.nodeTag(current_node);
+                                    },
+                                    else => break :get_finder .new,
+                                }
+                            },
+                            else => break :get_finder .new,
+                        };
+                        const assignment = ast.fullVarDecl(original_source.node) orelse break :get_finder .new;
+                        var buf: [2]Ast.Node.Index = undefined;
+                        const definition = ast.fullContainerDecl(&buf, assignment.ast.init_node.unwrap() orelse break :get_finder .new) orelse break :get_finder .new;
+                        break :get_finder .{ .preexisting = ast.tokenStart(definition.ast.main_token + 1) };
+                    } else break :get_finder .new;
+                };
+            }
+            switch (namespace_finder) {
+                .new => {
+                    if (last_namespace == null or !std.mem.eql(u8, last_namespace.?, reloc.name)) {
+                        try output_writer.print("pub const {s} = struct {{\n", .{reloc.name});
+                    }
+                    try output_writer.writeAll(namespace.getWritten());
+                },
+                .preexisting => |index| {
+                    try updates.append(.{
+                        .original = ast.source[index + 1 .. index + 1],
+                        .replace = namespace.getWritten(),
+                    });
+                },
+            }
+
+            last_namespace = reloc.name;
+        }
+        if (last_namespace != null and namespace_finder == .new) try output_writer.writeAll("};\n");
+        output.value.sort_by_node(ast);
+        std.mem.sort(Update, updates.items, {}, Update.cmp);
+        update_index = 0;
+        for (final_output_list.items) |i| {
+            const decl = outs[i];
             try outputUpdated(output_writer, sliceTo(ast.getNodeSource(decl.node).ptr, if (i + 1 < outs.len)
                 ast.getNodeSource(outs[i + 1].node).ptr
             else
                 ast.source.ptr[ast.source.len..]), updates.items);
         }
-        var last_namespace: ?[]const u8 = null;
-        for (namespaces, relocs) |*namespace, reloc| {
-            if (last_namespace != null and !std.mem.eql(u8, last_namespace.?, reloc.name)) {
-                try output_writer.writeAll("};\n");
-            }
-            if (last_namespace != null and std.mem.eql(u8, last_namespace.?, reloc.name)) {
-                try output_writer.writeAll(namespace.getWritten());
-            } else {
-                try output_writer.print("pub const {s} = struct {{\n", .{reloc.name});
-                try output_writer.writeAll(namespace.getWritten());
-            }
-            last_namespace = reloc.name;
-        }
-        if (last_namespace != null) try output_writer.writeAll("};\n");
         try output_writer.flush();
     }
 }

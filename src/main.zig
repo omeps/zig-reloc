@@ -117,7 +117,7 @@ pub fn main() !void {
     var file_buffer_writer: std.io.Writer.Allocating = try .initCapacity(allocator, known_file_size);
     defer file_buffer_writer.deinit();
     var in_buf: [1024]u8 = undefined;
-    var reader = input.reader(&.{});
+    var reader = input.readerStreaming(&.{});
     while (true) {
         const read_len = reader.read(&in_buf) catch |err| switch (err) {
             error.EndOfStream => break,
@@ -136,7 +136,7 @@ pub fn main() !void {
         return err;
     } else std.fs.File.stdout();
     var out_buffer: [4096]u8 = undefined;
-    var out_writer = out_file.writer(&out_buffer);
+    var out_writer = out_file.writerStreaming(&out_buffer);
 
     _ = try root.run(arena.allocator(), allocator, ast, &out_writer.interface, relocs.items, style);
     if (run_check) {
