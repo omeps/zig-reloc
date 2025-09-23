@@ -1032,7 +1032,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
                                 const proto_end = ast.getNodeSource(full.ast.return_type.unwrap().?);
                                 const proto = proto_start.ptr[0 .. proto_end.ptr - proto_start.ptr];
                                 try outputUpdated(writer, proto, updates.items);
-                                try writer.writeAll(" callconv(.C) ");
+                                try writer.writeAll(" callconv(.c) ");
                                 try outputUpdated(writer, proto_end, updates.items);
                             }
                             try writer.print(
