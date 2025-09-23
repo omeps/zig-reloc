@@ -278,7 +278,7 @@ const SearchContext = struct {
     updates: *std.ArrayList(Update),
     styling: Style,
     arena: std.mem.Allocator,
-    pub fn search(context: SearchContext, node: Ast.Node.Index, scope: Declaration.ParentedValue) !?*const Declaration.ParentedValue {
+    pub fn search(context: SearchContext, node: Ast.Node.Index, scope: Declaration.ParentedValue, gpa: std.mem.Allocator) !?*const Declaration.ParentedValue {
         var relevant_decl: ?*const Declaration.ParentedValue = switch (context.ast.nodeTag(node)) {
             .@"errdefer",
             .test_decl,
@@ -286,6 +286,7 @@ const SearchContext = struct {
                 _ = try context.search(
                     context.ast.nodeData(node).opt_token_and_node.@"1",
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -299,22 +300,27 @@ const SearchContext = struct {
                 if (decl_nodes.type_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 if (decl_nodes.align_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 if (decl_nodes.addrspace_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 if (decl_nodes.section_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 if (decl_nodes.init_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 return null;
             },
@@ -323,6 +329,7 @@ const SearchContext = struct {
                     _ = try context.search(
                         d,
                         scope,
+                        gpa,
                     );
                 }
                 return null;
@@ -331,6 +338,7 @@ const SearchContext = struct {
                 _ = try context.search(
                     context.ast.nodeData(node).node,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -339,10 +347,12 @@ const SearchContext = struct {
                 const left = try context.search(
                     lhs,
                     scope,
+                    gpa,
                 );
                 const right = try context.search(
                     rhs,
                     scope,
+                    gpa,
                 );
                 return left orelse right;
             },
@@ -352,6 +362,7 @@ const SearchContext = struct {
                 break :access &((try context.search(
                     lhs,
                     scope,
+                    gpa,
                 ) orelse return null).value.findChildDecl(context.ast.tokenSlice(a)) orelse return null).value;
             },
             .fn_decl => {
@@ -359,10 +370,12 @@ const SearchContext = struct {
                 _ = try context.search(
                     block,
                     scope,
+                    gpa,
                 );
                 return try context.search(
                     proto,
                     scope,
+                    gpa,
                 );
             },
             .fn_proto,
@@ -375,26 +388,32 @@ const SearchContext = struct {
                 for (data.params) |p| _ = try context.search(
                     p,
                     scope,
+                    gpa,
                 );
                 if (data.align_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 if (data.return_type.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 if (data.addrspace_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 if (data.section_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 if (data.callconv_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -408,6 +427,7 @@ const SearchContext = struct {
                     _ = try context.search(
                         statement,
                         scope,
+                        gpa,
                     );
                 }
                 return null;
@@ -425,6 +445,7 @@ const SearchContext = struct {
                     _ = try context.search(
                         member,
                         scope,
+                        gpa,
                     );
                 }
                 return null;
@@ -438,14 +459,17 @@ const SearchContext = struct {
                 if (full.align_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 if (full.type_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 if (full.value_expr.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     inner_scope,
+                    gpa,
                 );
                 return null;
             },
@@ -464,12 +488,14 @@ const SearchContext = struct {
                     _ = try context.search(
                         element,
                         scope,
+                        gpa,
                     );
                 }
                 if (full.type_expr.unwrap()) |sub_node| {
                     _ = try context.search(
                         sub_node,
                         scope,
+                        gpa,
                     );
                 }
                 return null;
@@ -478,6 +504,7 @@ const SearchContext = struct {
                 _ = try context.search(
                     context.ast.nodeData(node).node,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -490,18 +517,22 @@ const SearchContext = struct {
                 if (full.align_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 if (full.addrspace_node.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 if (full.sentinel.unwrap()) |sub_node| _ = try context.search(
                     sub_node,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.child_type,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -556,10 +587,12 @@ const SearchContext = struct {
                 _ = try context.search(
                     lhs,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     rhs,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -577,10 +610,12 @@ const SearchContext = struct {
                 for (full.ast.fields) |field| _ = try context.search(
                     field,
                     scope,
+                    gpa,
                 );
                 if (full.ast.type_expr.unwrap()) |ty| return try context.search(
                     ty,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -589,11 +624,13 @@ const SearchContext = struct {
                 _ = try context.search(
                     full.ast.condition,
                     scope,
+                    gpa,
                 );
                 for (full.ast.cases) |case|
                     _ = try context.search(
                         case,
                         scope,
+                        gpa,
                     );
                 return null;
             },
@@ -609,6 +646,7 @@ const SearchContext = struct {
                 return try context.search(
                     context.ast.nodeData(node).node,
                     scope,
+                    gpa,
                 );
             },
             .array_type, .array_type_sentinel => {
@@ -616,15 +654,18 @@ const SearchContext = struct {
                 _ = try context.search(
                     full.ast.elem_type,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.ast.elem_count,
                     scope,
+                    gpa,
                 );
                 if (full.ast.sentinel.unwrap()) |sentinel|
                     _ = try context.search(
                         sentinel,
                         scope,
+                        gpa,
                     );
                 return null;
             },
@@ -634,6 +675,7 @@ const SearchContext = struct {
                 for (params) |param| _ = try context.search(
                     param,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -643,18 +685,22 @@ const SearchContext = struct {
                 _ = try context.search(
                     slice.ast.sliced,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     slice.ast.start,
                     scope,
+                    gpa,
                 );
                 if (slice.ast.end.unwrap()) |end| _ = try context.search(
                     end,
                     scope,
+                    gpa,
                 );
                 if (slice.ast.sentinel.unwrap()) |sentinel| _ = try context.search(
                     sentinel,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -664,10 +710,12 @@ const SearchContext = struct {
                 for (full.ast.params) |param| _ = try context.search(
                     param,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.ast.fn_expr,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -675,6 +723,7 @@ const SearchContext = struct {
                 if (context.ast.nodeData(node).opt_node.unwrap()) |return_value| _ = try context.search(
                     return_value,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -682,6 +731,7 @@ const SearchContext = struct {
                 _ = try context.search(
                     context.ast.nodeData(node).node_and_token.@"0",
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -690,10 +740,12 @@ const SearchContext = struct {
                 for (full.ast.values) |value| _ = try context.search(
                     value,
                     scope,
+                    gpa,
                 );
                 return try context.search(
                     full.ast.target_expr,
                     scope,
+                    gpa,
                 );
             },
             .switch_range => {
@@ -701,10 +753,12 @@ const SearchContext = struct {
                 _ = try context.search(
                     lhs,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     rhs,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -713,6 +767,7 @@ const SearchContext = struct {
                 if (result.unwrap()) |result_node| _ = try context.search(
                     result_node,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -721,18 +776,22 @@ const SearchContext = struct {
                 _ = try context.search(
                     full.ast.cond_expr,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.ast.then_expr,
                     scope,
+                    gpa,
                 );
                 if (full.ast.cont_expr.unwrap()) |cont_node| _ = try context.search(
                     cont_node,
                     scope,
+                    gpa,
                 );
                 if (full.ast.else_expr.unwrap()) |else_node| _ = try context.search(
                     else_node,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -741,14 +800,17 @@ const SearchContext = struct {
                 if (full.ast.else_expr.unwrap()) |else_node| _ = try context.search(
                     else_node,
                     scope,
+                    gpa,
                 );
                 for (full.ast.inputs) |input| _ = try context.search(
                     input,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.ast.then_expr,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -757,14 +819,17 @@ const SearchContext = struct {
                 if (full.ast.else_expr.unwrap()) |else_node| _ = try context.search(
                     else_node,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.ast.cond_expr,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     full.ast.then_expr,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -773,10 +838,12 @@ const SearchContext = struct {
                 _ = try context.search(
                     lhs,
                     scope,
+                    gpa,
                 );
                 _ = try context.search(
                     rhs,
                     scope,
+                    gpa,
                 );
                 return null;
             },
@@ -790,7 +857,7 @@ const SearchContext = struct {
                 else => null,
             };
             if (access_slice) |s| {
-                try context.updates.appendSlice(switch (context.styling) {
+                try context.updates.appendSlice(gpa, switch (context.styling) {
                     .zig => &[_]Update{
                         .{
                             .original = s[0..reloc.prefix.len],
@@ -874,8 +941,8 @@ fn outputUpdated(writer: *std.io.Writer, source: []const u8, updates: []Update) 
     try writer.writeAll(range);
 }
 pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_writer: *std.io.Writer, relocs: []const NamespaceRelocation, styling: Style) !void {
-    var updates: std.ArrayList(Update) = .init(gpa);
-    defer updates.deinit();
+    var updates: std.ArrayList(Update) = .empty;
+    defer updates.deinit(gpa);
     update_index = 0;
 
     const output = try arena.create(Declaration.ParentedValue); //since this is on the arena no need to errdefer free
@@ -887,19 +954,28 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
     for (0..output.value.composed_type.len) |i| get_reloc: for (relocs) |r| if (output.value.composed_type[i].name.len > r.prefix.len and std.mem.startsWith(u8, output.value.composed_type[i].name, r.prefix)) {
         try decls.put(gpa, &output.value.composed_type[i].value.value, r);
         if (output.value.composed_type[i].value.value != .func or ast.nodeTag(output.value.composed_type[i].node) == .fn_decl) {
-            try updates.append(.{
-                .original = output.value.composed_type[i].name[0..r.prefix.len],
-                .replace = "@\"",
-            });
+            try updates.append(
+                gpa,
+                .{
+                    .original = output.value.composed_type[i].name[0..r.prefix.len],
+                    .replace = "@\"",
+                },
+            );
             if (styling == .zig)
-                try updates.append(.{
-                    .original = output.value.composed_type[i].name[r.prefix.len..],
-                    .replace = try Case.change(output.value.composed_type[i].name[r.prefix.len..], .determine(output.value.composed_type[i].value), arena),
-                });
-            try updates.append(.{
-                .original = output.value.composed_type[i].name[output.value.composed_type[i].name.len..output.value.composed_type[i].name.len],
-                .replace = "\"",
-            });
+                try updates.append(
+                    gpa,
+                    .{
+                        .original = output.value.composed_type[i].name[r.prefix.len..],
+                        .replace = try Case.change(output.value.composed_type[i].name[r.prefix.len..], .determine(output.value.composed_type[i].value), arena),
+                    },
+                );
+            try updates.append(
+                gpa,
+                .{
+                    .original = output.value.composed_type[i].name[output.value.composed_type[i].name.len..output.value.composed_type[i].name.len],
+                    .replace = "\"",
+                },
+            );
         }
         break :get_reloc;
     };
@@ -914,6 +990,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
         },
         .root,
         output.*,
+        gpa,
     );
 
     std.mem.sort(Update, updates.items, {}, Update.cmp);
@@ -926,8 +1003,8 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
             namespace.* = .init(gpa);
         }
         const outs = output.value.composed_type;
-        var final_output_list: std.ArrayList(usize) = .init(gpa);
-        defer final_output_list.deinit();
+        var final_output_list: std.ArrayList(usize) = .empty;
+        defer final_output_list.deinit(gpa);
         for (0..outs.len) |i| get_reloc: {
             const decl = outs[i];
             for (namespaces, relocs) |*n, r| if (decl.name.len > r.prefix.len and std.mem.startsWith(u8, decl.name, r.prefix)) {
@@ -986,7 +1063,7 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
                 }
                 break :get_reloc;
             };
-            try final_output_list.append(i);
+            try final_output_list.append(gpa, i);
         }
 
         output.value.sort_by_name();
@@ -1055,12 +1132,12 @@ pub fn run(arena: std.mem.Allocator, gpa: std.mem.Allocator, ast: Ast, output_wr
                     if (last_namespace == null or !std.mem.eql(u8, last_namespace.?, reloc.name)) {
                         try output_writer.print("pub const {s} = struct {{\n", .{reloc.name});
                     }
-                    try output_writer.writeAll(namespace.getWritten());
+                    try output_writer.writeAll(namespace.written());
                 },
                 .preexisting => |index| {
-                    try updates.append(.{
+                    try updates.append(gpa, .{
                         .original = ast.source[index + 1 .. index + 1],
-                        .replace = namespace.getWritten(),
+                        .replace = namespace.written(),
                     });
                 },
             }

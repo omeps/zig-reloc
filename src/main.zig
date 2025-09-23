@@ -38,7 +38,7 @@ pub fn main() !void {
     var run_check = false;
     var run_format = false;
     var style: root.Style = .none;
-    var relocs: std.ArrayListUnmanaged(root.NamespaceRelocation) = .empty;
+    var relocs: std.ArrayList(root.NamespaceRelocation) = .empty;
     defer relocs.deinit(allocator);
     while (args.next()) |arg| {
         if (std.meta.stringToEnum(Flag, arg)) |flag| switch (flag) {
