@@ -116,16 +116,10 @@ pub fn main() !void {
     const known_file_size = if (input.stat()) |stat| stat.size + 1 else |_| 0;
     var file_buffer_writer: std.io.Writer.Allocating = try .initCapacity(allocator, known_file_size);
     defer file_buffer_writer.deinit();
-    var in_buf: [1024]u8 = undefined;
     var reader = input.readerStreaming(&.{});
     while (true) {
-        const read_len = reader.read(&in_buf) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
-        try file_buffer_writer.writer.writeAll(in_buf[0..read_len]);
+        _ = reader.interface.stream(&file_buffer_writer.writer, .unlimited) catch |err| if (err != error.EndOfStream) return err else break;
     }
-    _ = try file_buffer_writer.writer.sendFileAll(&reader, .unlimited);
     var file_buffer = file_buffer_writer.toArrayList();
     defer file_buffer.deinit(allocator);
     if (file_buffer.items.len == 0 or file_buffer.items[file_buffer.items.len - 1] != 0) try file_buffer.append(allocator, 0);
