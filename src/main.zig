@@ -29,7 +29,7 @@ pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var args = std.process.ArgIterator.initWithAllocator(allocator) catch return 1;
+    var args = try std.process.ArgIterator.initWithAllocator(allocator);
     defer args.deinit();
 
     _ = args.skip();
